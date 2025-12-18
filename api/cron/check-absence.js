@@ -19,40 +19,27 @@ const db = admin.firestore();
 
 export default async function handler(req, res) {
   try {
-    console.log("🔄 Running Monthly Absence Check...");
+    console.log("🔄 Running Monthly Absence Check (Alert System Enabled)...");
 
     // ============================================================
-    // 1. البحث عن حلقة "احتياطي" الحقيقية لجلب الـ ID الخاص بها
+    // 1. جلب إعدادات المدة من الأدمن (الافتراضي 60 يوم)
     // ============================================================
-    let reserveHalaqaId = "reserve"; // قيمة افتراضية
-    let reserveHalaqaName = "احتياطي";
-
-    // نحاول البحث عن حلقة اسمها بالضبط "احتياطي"
-    const halaqaSnap = await db
-      .collection("halaqat")
-      .where("name", "==", "احتياطي")
-      .limit(1)
+    const configSnap = await db
+      .collection("app_settings")
+      .doc("absence_config")
       .get();
+    const absenceLimitDays = configSnap.exists
+      ? configSnap.data().limitDays || 60
+      : 60;
 
-    if (!halaqaSnap.empty) {
-      const hDoc = halaqaSnap.docs[0];
-      reserveHalaqaId = hDoc.id; // ✅ الـ ID الحقيقي من قاعدة بياناتك
-      reserveHalaqaName = hDoc.data().name;
-      console.log(
-        `✅ Found Real Reserve Halaqa: ${reserveHalaqaName} (${reserveHalaqaId})`
-      );
-    } else {
-      console.warn(
-        '⚠️ Warning: No Halaqa named "احتياطي" found. Using default ID.'
-      );
-    }
+    console.log(`📡 Current Absence Limit: ${absenceLimitDays} days.`);
 
     // ============================================================
-    // 2. حساب تاريخ "قبل 60 يوماً"
+    // 2. حساب تاريخ "الحد القاطع" بناءً على إعدادات الأدمن
     // ============================================================
     const today = new Date();
     const cutoffDate = new Date();
-    cutoffDate.setDate(today.getDate() - 60);
+    cutoffDate.setDate(today.getDate() - absenceLimitDays);
     const cutoffDateStr = cutoffDate.toISOString().split("T")[0];
 
     // ============================================================
@@ -67,11 +54,13 @@ export default async function handler(req, res) {
       return res.status(200).json({ message: "No main students found." });
     }
 
-    const activeStudentIds = [];
-    studentsSnap.forEach((doc) => activeStudentIds.push(doc.id));
+    const mainStudents = [];
+    studentsSnap.forEach((doc) =>
+      mainStudents.push({ id: doc.id, ...doc.data() })
+    );
 
     // ============================================================
-    // 4. جلب من سجلوا حضور "حاضر" خلال آخر 60 يوم
+    // 4. جلب الطلاب الحاضرين فعلياً خلال هذه المدة
     // ============================================================
     const attendanceSnap = await db
       .collection("attendance")
@@ -85,45 +74,65 @@ export default async function handler(req, res) {
     });
 
     // ============================================================
-    // 5. تحديد المتغيبين
+    // 5. جلب الطلاب الذين لديهم "استئذان مفعل" (Approved Leave)
     // ============================================================
-    const studentsToDemote = activeStudentIds.filter(
-      (id) => !attendedStudentIds.has(id)
+    const activeLeavesSnap = await db
+      .collection("leave_requests")
+      .where("status", "==", "approved")
+      .where("endDate", ">=", admin.firestore.Timestamp.now())
+      .get();
+
+    const excusedStudentIds = new Set();
+    activeLeavesSnap.forEach((doc) => {
+      excusedStudentIds.add(doc.data().studentId);
+    });
+
+    // ============================================================
+    // 6. تحديد الطلاب المرشحين للنقل (غائب + ليس لديه عذر مقبول)
+    // ============================================================
+    const candidatesForDemotion = mainStudents.filter(
+      (s) => !attendedStudentIds.has(s.id) && !excusedStudentIds.has(s.id)
     );
 
-    if (studentsToDemote.length === 0) {
-      return res
-        .status(200)
-        .json({ message: "Excellent! No students exceeded absence limit." });
+    if (candidatesForDemotion.length === 0) {
+      return res.status(200).json({ message: "No students to alert about." });
     }
 
     // ============================================================
-    // 6. تنفيذ النقل للحلقة الاحتياطي الحقيقية
+    // 7. إنشاء "إنذارات" للأدمن بدلاً من النقل المباشر
     // ============================================================
     const batch = db.batch();
 
-    studentsToDemote.forEach((id) => {
-      const ref = db.collection("students").doc(id);
-      batch.update(ref, {
-        type: "reserve", // تغيير النوع
-        halaqaName: reserveHalaqaName, // اسم الحلقة الحقيقي
-        halaqaId: reserveHalaqaId, // 🎯 الـ ID الحقيقي للحلقة
-        notes: "تم النقل تلقائياً بسبب الغياب لمدة 60 يوم",
-        updatedAt: new Date(),
-      });
+    candidatesForDemotion.forEach((student) => {
+      // ننشئ وثيقة في مجموعة تنبيهات النقل
+      const alertRef = db.collection("demotion_alerts").doc(student.id);
+      batch.set(
+        alertRef,
+        {
+          studentId: student.id,
+          studentName: student.fullName || "مجهول",
+          halaqaName: student.halaqaName || "بدون حلقة",
+          lastCutoffDate: cutoffDateStr,
+          absenceDays: absenceLimitDays,
+          status: "pending", // معلق لموافقة الأدمن
+          reason: `غائب لمدة تتجاوز ${absenceLimitDays} يوم بدون عذر`,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        },
+        { merge: true }
+      );
     });
 
     await batch.commit();
 
     console.log(
-      `✅ Moved ${studentsToDemote.length} students to ${reserveHalaqaName}.`
+      `✅ Created alerts for ${candidatesForDemotion.length} students for Admin review.`
     );
 
     return res.status(200).json({
       success: true,
-      count: studentsToDemote.length,
-      target_halaqa: reserveHalaqaName,
-      demoted_ids: studentsToDemote,
+      alerts_created: candidatesForDemotion.length,
+      limit_used: absenceLimitDays,
+      students: candidatesForDemotion.map((s) => s.fullName),
     });
   } catch (error) {
     console.error("Cron Job Error:", error);
