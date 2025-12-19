@@ -2,7 +2,6 @@
 import { verifyAdminRole } from "./utils/auth-admin.js";
 import deleteUser from "./delete-user.js";
 import resetPassword from "./reset-password.js";
-import updateEmail from "./update-email.js";
 import moveToReserve from "./actions/move-to-reserve.js";
 import notifyParent from "./actions/notify-parent.js";
 
@@ -16,38 +15,32 @@ export default async function handler(req, res) {
   const { command, userToken } = req.body;
 
   try {
-    // 💡 الدردشة العامة مسموحة للجميع دون قيود
+    // الدردشة مسموحة للجميع
     if (command.action === "chat") {
       return res.status(200).json({ success: true, message: command.warning });
     }
 
-    // 🔒 الأوامر الإدارية تتطلب صلاحيات كاملة
+    // التحقق من الصلاحيات للأوامر الإدارية
     if (!userToken)
       return res.status(401).json({ error: "يجب تسجيل الدخول كمسؤول أولاً" });
 
     const isAdmin = await verifyAdminRole(userToken);
     if (!isAdmin)
-      return res
-        .status(403)
-        .json({ error: "عذراً، هذه العملية تتطلب صلاحيات إدارية حصرية" });
+      return res.status(403).json({ error: "عذراً، هذه صلاحية إدارية فقط" });
 
     switch (command.action) {
       case "delete_user":
         return await deleteUser(req, res);
       case "reset_password":
         return await resetPassword(req, res);
-      case "update_email":
-        return await updateEmail(req, res);
       case "move_to_reserve":
         return await moveToReserve(req, res);
       case "notify_parent":
         return await notifyParent(req, res);
       default:
-        return res
-          .status(400)
-          .json({ error: "الإجراء المطلوب غير مدرج في النظام" });
+        return res.status(400).json({ error: "الإجراء غير مدعوم حالياً" });
     }
   } catch (err) {
-    res.status(500).json({ error: "خطأ فني داخلي أثناء التنفيذ" });
+    res.status(500).json({ error: "خطأ فني في تنفيذ العملية" });
   }
 }
