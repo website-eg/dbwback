@@ -15,23 +15,33 @@ const ACADEMY_POLICY = {
 };
 
 export default async function handler(req, res) {
-  // إعدادات CORS لضمان العمل مع Netlify
+  // 1. إعدادات CORS الشاملة (لحل مشكلة Preflight نهائياً)
   res.setHeader("Access-Control-Allow-Credentials", true);
   res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET,OPTIONS,PATCH,DELETE,POST,PUT"
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization"
+  );
 
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST")
+  // معالجة طلب OPTIONS (Preflight) - التأكد من إرجاع 200 OK
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  if (req.method !== "POST") {
     return res.status(405).json({ error: "Method Not Allowed" });
+  }
 
   const { text, adminName = "إدارة الأكاديمية", history = [] } = req.body;
 
   if (!text) return res.status(400).json({ error: "الأمر فارغ" });
 
   try {
-    // 1. تجهيز مصفوفة الرسائل مع الذاكرة (History)
-    // نأخذ آخر 6 رسائل فقط للحفاظ على سرعة الرد واستهلاك التوكنز
+    // 2. تجهيز الذاكرة (آخر 6 رسائل)
     const chatHistory = history.slice(-6).map((msg) => ({
       role: msg.role === "user" ? "user" : "assistant",
       content:
@@ -42,32 +52,16 @@ export default async function handler(req, res) {
 
     const systemPrompt = {
       role: "system",
-      content: `
-أنت المساعد الإداري الذكي لـ "أكاديمية بر الوالدين". وظيفتك تحويل أوامر الإدارة إلى JSON منظم.
-
-❗ قوانين تقنية صارمة:
-- الرد يجب أن يكون قالب JSON فقط.
-- ممنوع كتابة أي نص أو شرح خارج الـ JSON.
-- إذا سألك المستخدم عن شيء لا تعرفه أو خارج الصلاحيات، استخدم action: "error".
-
+      content: `أنت المساعد الإداري لـ "أكاديمية بر الوالدين". حول الأوامر لـ JSON فقط.
 🛡️ لائحة الأكاديمية:
-- الاستئذان: بحد أقصى ${ACADEMY_POLICY.attendance.maxExcusePerMonth} شهرياً.
-- الغياب: ${ACADEMY_POLICY.attendance.maxAbsenceLimit} حصة تؤدي للنقل للاحتياطي (move_to_reserve).
-- القبول: يتطلب درجة ≥ ${ACADEMY_POLICY.admission.minExamScore}٪.
-
-🎯 الأوامر المتاحة (Actions):
-- mark_absent, send_report, reset_password, move_to_reserve, notify_parent, delete_user, update_email.
-
-الصيغة المطلوبة:
-{
-  "action": "اسم_الأمر",
-  "data": { ... الحقول المطلوبة ... },
-  "requires_confirmation": true,
-  "warning": "رسالة تأكيد أو توضيح باللغة العربية"
-}`,
+- الاستئذان: ${ACADEMY_POLICY.attendance.maxExcusePerMonth}/شهر.
+- الغياب: ${ACADEMY_POLICY.attendance.maxAbsenceLimit} حصة = احتياطي.
+- القبول: درجة ≥ ${ACADEMY_POLICY.admission.minExamScore}٪.
+🎯 الأوامر: mark_absent, send_report, reset_password, move_to_reserve, notify_parent, delete_user, update_email.
+رد بصيغة JSON فقط.`,
     };
 
-    // 2. الاتصال بـ Groq API
+    // 3. الاتصال بـ Groq API
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -93,7 +87,7 @@ export default async function handler(req, res) {
 
     if (!content) throw new Error("لم يتم استلام رد من الذكاء الاصطناعي");
 
-    // 3. تنظيف الرد من علامات Markdown (مثل ```json ... ```)
+    // 4. تنظيف الرد من علامات Markdown
     let cleanContent = content.trim();
     if (cleanContent.startsWith("```")) {
       cleanContent = cleanContent
@@ -102,9 +96,8 @@ export default async function handler(req, res) {
         .trim();
     }
 
-    // 4. التأكد من صحة الـ JSON وإرساله
-    const parsedResult = JSON.parse(cleanContent);
-    res.status(200).json(parsedResult);
+    // 5. إرسال الرد النهائي
+    res.status(200).json(JSON.parse(cleanContent));
   } catch (error) {
     console.error("AI Parser Error:", error);
     res.status(500).json({
