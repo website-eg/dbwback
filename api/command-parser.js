@@ -1,7 +1,7 @@
 import fetch from "node-fetch";
 
 export default async function handler(req, res) {
-  // 1. إعدادات CORS للسماح لنيتليفاى بالوصول
+  // إعدادات الوصول (CORS)
   res.setHeader("Access-Control-Allow-Credentials", true);
   res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
@@ -10,63 +10,64 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-  // 2. استخراج البيانات (تأكدنا من مطابقة المسميات مع الفرونت إند)
   const { text, adminName, history = [] } = req.body;
 
+  // التحقق من وصول البيانات
   if (!text) {
-    return res.status(400).json({ error: "الطلب فارغ، لم يتم استلام حقل text" });
+    return res.status(400).json({ error: "خطأ: لم يتم استلام نص الأمر (text)" });
   }
 
   try {
-    // 3. التحقق من وجود مفتاح API
-    if (!process.env.GROQ_API_KEY) {
-      throw new Error("GROQ_API_KEY is missing in Vercel Environment Variables");
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      throw new Error("Missing GROQ_API_KEY in Vercel settings");
     }
 
-    // 4. الاتصال بـ Groq API مباشرة لضمان أقصى سرعة
-    const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    // الاتصال بذكاء Groq الاصطناعي
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       headers: {
-        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Authorization": `Bearer ${apiKey}`,
         "Content-Type": "application/json"
       },
       body: JSON.stringify({
         model: "llama-3.3-70b-versatile",
         messages: [
-          { role: "system", content: `أنت مساعد إداري لأكاديمية بر الوالدين. اسم الإداري: ${adminName}. رد بوقار وأدب وبصيغة JSON فقط.` },
-          ...history.slice(-6),
+          { 
+            role: "system", 
+            content: `أنت مساعد إداري في أكاديمية بر الوالدين لخدمة القرآن. اسمك "مساعد بر". المدير الحالي هو: ${adminName}. يجب أن يكون ردك وقوراً وباللغة العربية الفصحى. إذا كان الطلب أمراً إدارياً، رد بصيغة JSON تحتوي على action و data و warning.` 
+          },
+          ...history.slice(-5),
           { role: "user", content: text }
         ],
         temperature: 0.2
       })
     });
 
-    const aiData = await groqResponse.json();
+    const data = await response.json();
     
-    // فحص هل رد Groq سليم؟
-    if (!groqResponse.ok) {
-      throw new Error(aiData.error?.message || "فشل الاتصال بـ Groq");
+    if (!response.ok) {
+      throw new Error(data.error?.message || "خطأ في الاتصال بـ Groq");
     }
 
-    const aiContent = aiData.choices[0]?.message?.content || "";
+    const aiMsg = data.choices[0]?.message?.content || "";
 
-    // محاولة استخراج JSON من رد الذكاء الاصطناعي
-    let finalResponse;
+    // استخراج الـ JSON من رد الذكاء الاصطناعي إذا وُجد
+    let finalJson;
     try {
-      const jsonMatch = aiContent.match(/\{.*\}/s);
-      finalResponse = jsonMatch ? JSON.parse(jsonMatch[0]) : { action: "chat", warning: aiContent };
+      const match = aiMsg.match(/\{.*\}/s);
+      finalJson = match ? JSON.parse(match[0]) : { action: "chat", warning: aiMsg };
     } catch (e) {
-      finalResponse = { action: "chat", warning: aiContent };
+      finalJson = { action: "chat", warning: aiMsg };
     }
 
-    return res.status(200).json(finalResponse);
+    return res.status(200).json(finalJson);
 
   } catch (error) {
-    console.error("Critical API Error:", error);
+    console.error("Backend Error:", error);
     return res.status(500).json({ 
       action: "error", 
-      warning: "عذراً، حدث خطأ فني في السيرفر. تأكد من إعدادات المفاتيح البرمجية.",
-      details: error.message 
+      warning: "عذراً، حدث خطأ داخلي في السيرفر. يرجى التأكد من إعدادات Vercel." 
     });
   }
 }
