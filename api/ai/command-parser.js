@@ -1,8 +1,7 @@
+// api/command-parser.js
 import fetch from "node-fetch";
 
-/* =========================================
-   🛡️ القوانين التنظيمية للأكاديمية (ملزمة)
-========================================= */
+/* 🛡️ القوانين التنظيمية للأكاديمية */
 const ACADEMY_POLICY = {
   attendance: {
     maxExcusePerMonth: 2,
@@ -15,7 +14,7 @@ const ACADEMY_POLICY = {
 };
 
 export default async function handler(req, res) {
-  // 1. إعدادات CORS الشاملة (لحل مشكلة Preflight نهائياً)
+  // 1. إعدادات رؤوس CORS لضمان قبول الطلب من نيتليفاى
   res.setHeader("Access-Control-Allow-Credentials", true);
   res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app");
   res.setHeader(
@@ -27,7 +26,7 @@ export default async function handler(req, res) {
     "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version, Authorization"
   );
 
-  // معالجة طلب OPTIONS (Preflight) - التأكد من إرجاع 200 OK
+  // 2. معالجة طلب OPTIONS (Preflight) - حل مشكلة الـ CORS النهائية
   if (req.method === "OPTIONS") {
     return res.status(200).end();
   }
@@ -41,7 +40,7 @@ export default async function handler(req, res) {
   if (!text) return res.status(400).json({ error: "الأمر فارغ" });
 
   try {
-    // 2. تجهيز الذاكرة (آخر 6 رسائل)
+    // 3. معالجة الذاكرة (Context) لآخر 6 رسائل
     const chatHistory = history.slice(-6).map((msg) => ({
       role: msg.role === "user" ? "user" : "assistant",
       content:
@@ -50,6 +49,7 @@ export default async function handler(req, res) {
           : JSON.stringify(msg.content),
     }));
 
+    // 4. إعداد الأوامر والقوانين للذكاء الاصطناعي
     const systemPrompt = {
       role: "system",
       content: `أنت المساعد الإداري لـ "أكاديمية بر الوالدين". حول الأوامر لـ JSON فقط.
@@ -58,10 +58,10 @@ export default async function handler(req, res) {
 - الغياب: ${ACADEMY_POLICY.attendance.maxAbsenceLimit} حصة = احتياطي.
 - القبول: درجة ≥ ${ACADEMY_POLICY.admission.minExamScore}٪.
 🎯 الأوامر: mark_absent, send_report, reset_password, move_to_reserve, notify_parent, delete_user, update_email.
-رد بصيغة JSON فقط.`,
+رد بصيغة JSON فقط: {"action": "...", "data": {...}, "warning": "..."}`,
     };
 
-    // 3. الاتصال بـ Groq API
+    // 5. الاتصال بـ Groq API باستخدام المفتاح السري المخرن في Vercel
     const response = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
       {
@@ -87,7 +87,7 @@ export default async function handler(req, res) {
 
     if (!content) throw new Error("لم يتم استلام رد من الذكاء الاصطناعي");
 
-    // 4. تنظيف الرد من علامات Markdown
+    // 6. تنظيف الرد من علامات Markdown لضمان صحة الـ JSON
     let cleanContent = content.trim();
     if (cleanContent.startsWith("```")) {
       cleanContent = cleanContent
@@ -96,13 +96,12 @@ export default async function handler(req, res) {
         .trim();
     }
 
-    // 5. إرسال الرد النهائي
     res.status(200).json(JSON.parse(cleanContent));
   } catch (error) {
     console.error("AI Parser Error:", error);
     res.status(500).json({
       action: "error",
-      warning: "حدث خطأ فني، يرجى إعادة صياغة الأمر.",
+      warning: "حدث خطأ فني أثناء تحليل الأمر، يرجى المحاولة مرة أخرى.",
     });
   }
 }

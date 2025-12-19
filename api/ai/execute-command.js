@@ -2,8 +2,8 @@
 import deleteUser from "./delete-user.js";
 import resetPassword from "./reset-password.js";
 import updateEmail from "./update-email.js";
-import moveToReserve from "./move-to-reserve.js";
-import notifyParent from "./notify-parent.js";
+import moveToReserve from "./actions/move-to-reserve.js";
+import notifyParent from "./actions/notify-parent.js";
 
 export default async function handler(req, res) {
   if (req.method !== "POST") return res.status(405).end();
