@@ -1,49 +1,72 @@
-// api/command-parser.js
-import { Groq } from "groq-sdk";
-
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY, // تأكد من مطابقة الاسم في Vercel
-});
+import fetch from "node-fetch";
 
 export default async function handler(req, res) {
-  // 1. تأكد من أن الطلب من نوع POST
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "الطريقة غير مسموح بها" });
+  // 1. إعدادات CORS للسماح لنيتليفاى بالوصول
+  res.setHeader("Access-Control-Allow-Credentials", true);
+  res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app");
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
+
+  // 2. استخراج البيانات (تأكدنا من مطابقة المسميات مع الفرونت إند)
+  const { text, adminName, history = [] } = req.body;
+
+  if (!text) {
+    return res.status(400).json({ error: "الطلب فارغ، لم يتم استلام حقل text" });
   }
 
   try {
-    const { prompt, context } = req.body;
-
-    // 2. التحقق من وجود المدخلات
-    if (!prompt) {
-      return res.status(400).json({ error: "الطلب فارغ" });
+    // 3. التحقق من وجود مفتاح API
+    if (!process.env.GROQ_API_KEY) {
+      throw new Error("GROQ_API_KEY is missing in Vercel Environment Variables");
     }
 
-    // 3. استدعاء GROQ مع معالجة الوقت المستغرق
-    const chatCompletion = await groq.chat.completions.create({
-      messages: [
-        {
-          role: "system",
-          content: "أنت مساعد إداري لأكاديمية قرآنية. حلل الأوامر بدقة.",
-        },
-        {
-          role: "user",
-          content: `السياق: ${JSON.stringify(context)}\nالأمر: ${prompt}`,
-        },
-      ],
-      model: "mixtral-8x7b-32768",
+    // 4. الاتصال بـ Groq API مباشرة لضمان أقصى سرعة
+    const groqResponse = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: `أنت مساعد إداري لأكاديمية بر الوالدين. اسم الإداري: ${adminName}. رد بوقار وأدب وبصيغة JSON فقط.` },
+          ...history.slice(-6),
+          { role: "user", content: text }
+        ],
+        temperature: 0.2
+      })
     });
 
-    const result = chatCompletion.choices[0]?.message?.content || "";
+    const aiData = await groqResponse.json();
+    
+    // فحص هل رد Groq سليم؟
+    if (!groqResponse.ok) {
+      throw new Error(aiData.error?.message || "فشل الاتصال بـ Groq");
+    }
 
-    // 4. إرسال استجابة JSON صحيحة دائماً
-    return res.status(200).json({ result: result });
+    const aiContent = aiData.choices[0]?.message?.content || "";
+
+    // محاولة استخراج JSON من رد الذكاء الاصطناعي
+    let finalResponse;
+    try {
+      const jsonMatch = aiContent.match(/\{.*\}/s);
+      finalResponse = jsonMatch ? JSON.parse(jsonMatch[0]) : { action: "chat", warning: aiContent };
+    } catch (e) {
+      finalResponse = { action: "chat", warning: aiContent };
+    }
+
+    return res.status(200).json(finalResponse);
+
   } catch (error) {
-    console.error("API Error:", error);
-    // منع انهيار الخادم وإرسال خطأ بصيغة JSON
-    return res.status(500).json({
-      error: "حدث خطأ داخلي في الخادم",
-      details: error.message,
+    console.error("Critical API Error:", error);
+    return res.status(500).json({ 
+      action: "error", 
+      warning: "عذراً، حدث خطأ فني في السيرفر. تأكد من إعدادات المفاتيح البرمجية.",
+      details: error.message 
     });
   }
 }
