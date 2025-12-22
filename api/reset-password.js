@@ -1,5 +1,5 @@
 import admin from "firebase-admin";
-import { verifyAdminRole } from "./_utils/auth-admin"; // 👈 استدعاء الحماية
+import { verifyAdminRole } from "./_utils/auth-admin.js"; // 👈 استدعاء الحماية
 
 // تهيئة Firebase (نفس السابق)
 if (!admin.apps.length) {

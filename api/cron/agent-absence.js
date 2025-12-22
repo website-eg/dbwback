@@ -1,6 +1,6 @@
 // api/cron/agent-absence.js
 import admin from "firebase-admin";
-import { TelegramAgent } from "../_utils/telegram-service";
+import { TelegramAgent } from "../_utils/telegram-service.js";
 
 // تهيئة Firebase (نفس كودك المعتاد)
 if (!admin.apps.length) {

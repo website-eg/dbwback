@@ -1,5 +1,5 @@
 import admin from "firebase-admin";
-import { verifyAdminRole } from "../_utils/auth-admin"; // تأكد من المسار الصحيح (نقطتين للخلف)
+import { verifyAdminRole } from "../_utils/auth-admin.js"; // تأكد من المسار الصحيح (نقطتين للخلف)
 
 if (!admin.apps.length) {
   admin.initializeApp({
