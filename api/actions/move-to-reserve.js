@@ -1,7 +1,6 @@
-// api/actions/move-to-reserve.js
 import admin from "firebase-admin";
+import { verifyAdminRole } from "../utils/auth-admin"; // تأكد من المسار الصحيح (نقطتين للخلف)
 
-// تهيئة Firebase Admin (نفس كود ملفاتك السابقة لضمان الاستمرارية)
 if (!admin.apps.length) {
   admin.initializeApp({
     credential: admin.credential.cert({
@@ -15,62 +14,47 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 export default async function handler(req, res) {
-  // إعدادات CORS المتوافقة مع مشروعك
   res.setHeader("Access-Control-Allow-Credentials", true);
   res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app");
   res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
   if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST")
-    return res.status(405).json({ error: "Method Not Allowed" });
+
+  // 🛡️ الحماية
+  const token = req.headers.authorization?.split("Bearer ")[1];
+  if (!token || !(await verifyAdminRole(token))) {
+    return res.status(403).json({ error: "غير مصرح لك بهذا الإجراء" });
+  }
 
   const { studentId, reason } = req.body;
-
-  if (!studentId) {
-    return res.status(400).json({ error: "معرف الطالب (studentId) مطلوب" });
-  }
+  if (!studentId) return res.status(400).json({ error: "معرف الطالب مطلوب" });
 
   try {
     const studentRef = db.collection("students").doc(studentId);
     const alertRef = db.collection("demotion_alerts").doc(studentId);
 
-    // استخدام Transaction لضمان تنفيذ كافة العمليات أو فشلها معاً
     await db.runTransaction(async (transaction) => {
       const studentDoc = await transaction.get(studentRef);
+      if (!studentDoc.exists) throw new Error("الطالب غير موجود");
 
-      if (!studentDoc.exists) {
-        throw new Error("الطالب غير موجود في قاعدة البيانات");
-      }
-
-      // 1. تحديث بيانات الطالب للاحتياطي
       transaction.update(studentRef, {
         type: "reserve",
         status: "inactive",
         demotionDate: admin.firestore.FieldValue.serverTimestamp(),
-        demotionReason: reason || "تم النقل بواسطة نظام الإدارة الذكي",
+        demotionReason: reason || "بواسطة الأدمن",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
-      // 2. تحديث حالة التنبيه إذا كان موجوداً
       transaction.update(alertRef, {
         status: "executed",
         executedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     });
 
-    return res.status(200).json({
-      success: true,
-      message: `تم نقل الطالب ${studentId} إلى الاحتياطي بنجاح`,
-    });
+    return res.status(200).json({ success: true, message: "تم النقل بنجاح" });
   } catch (error) {
-    console.error("Move to Reserve Error:", error);
-    // إذا لم يكن هناك تنبيه مسبق، سنكمل عملية النقل بنجاح
-    if (error.message.includes("NOT_FOUND") || error.code === 5) {
-      return res
-        .status(200)
-        .json({ success: true, message: "تم نقل الطالب (لا يوجد تنبيه مسبق)" });
-    }
+    console.error(error);
     return res.status(500).json({ error: error.message });
   }
 }
