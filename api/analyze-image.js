@@ -40,7 +40,7 @@ export default async function handler(req, res) {
                     ],
                 },
             ],
-            model: "llama-3.2-11b-vision-preview",
+            model: "llama-3.2-90b-vision-preview",
             temperature: 0,
             stream: false,
             response_format: { type: "json_object" },
