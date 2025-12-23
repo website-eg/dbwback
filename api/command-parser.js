@@ -71,30 +71,31 @@ const ACADEMY_MASTER_PROMPT = `
 `;
 
 export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
+   if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
-  const apiKey = process.env.GROQ_API_KEY;
-  if (!apiKey) return res.status(500).json({ error: "Missing API Key" });
+   const apiKey = process.env.GROQ_API_KEY;
+   if (!apiKey) return res.status(500).json({ error: "Missing API Key" });
 
-  const groq = new Groq({ apiKey });
+   const groq = new Groq({ apiKey });
 
-  try {
-    const { messages, userContext } = req.body;
+   try {
+      const { messages, userContext } = req.body;
 
-    const response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        { role: "system", content: ACADEMY_MASTER_PROMPT },
-        ...messages,
-      ],
-      temperature: 0.3,
-    });
+      const response = await groq.chat.completions.create({
+         model: "llama-3.3-70b-versatile",
+         messages: [
+            { role: "system", content: ACADEMY_MASTER_PROMPT },
+            ...messages,
+         ],
+         temperature: 0.3,
+      });
 
-    res.status(200).json({ content: response.choices[0].message.content });
-  } catch (error) {
-    console.error(error);
-    res
-      .status(500)
-      .json({ error: "تعطل السيرفر، تأكد من تحديث ملف package.json" });
-  }
+      res.status(200).json({ content: response.choices[0].message.content });
+   } catch (error) {
+      console.error("Backend Error:", error);
+      res.status(500).json({
+         error: `Error: ${error.message || "Unknown Backend Error"}`,
+         details: error.toString()
+      });
+   }
 }

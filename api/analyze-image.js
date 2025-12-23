@@ -50,6 +50,9 @@ export default async function handler(req, res) {
         res.status(200).json(JSON.parse(content));
     } catch (error) {
         console.error("AI Vision Error:", error);
-        res.status(500).json({ error: "Failed to analyze image" });
+        res.status(500).json({
+            error: `Vision Error: ${error.message || "Unknown Error"}`,
+            details: error.toString()
+        });
     }
 }
