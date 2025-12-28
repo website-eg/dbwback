@@ -1,5 +1,7 @@
 // api/command-parser.js
-import Groq from "groq-sdk";
+import Groq from "groq-sdk"; // Keep import but unused, or remove if not needed. Better to remove to clean up.
+// Actually, I should remove 'import Groq' since I am using fetch now.
+// Let's write the clean version.
 
 const ACADEMY_MASTER_PROMPT = `
 أنت المساعد الإداري الرقمي الرسمي لـ **"أكاديمية بر الوالدين لخدمة القرآن الكريم"** 📖.
@@ -73,24 +75,41 @@ const ACADEMY_MASTER_PROMPT = `
 export default async function handler(req, res) {
    if (req.method !== "POST") return res.status(405).send("Method Not Allowed");
 
-   const apiKey = process.env.GROQ_API_KEY;
-   if (!apiKey) return res.status(500).json({ error: "Missing API Key" });
-
-   const groq = new Groq({ apiKey });
+   const apiKey = process.env.OPENROUTER_API_KEY; // ✅ Updated Env Var
+   if (!apiKey) return res.status(500).json({ error: "Missing OpenRouter API Key" });
 
    try {
       const { messages, userContext } = req.body;
 
-      const response = await groq.chat.completions.create({
-         model: "llama-3.3-70b-versatile",
-         messages: [
-            { role: "system", content: ACADEMY_MASTER_PROMPT },
-            ...messages,
-         ],
-         temperature: 0.3,
+      // 🔥 OpenRouter API Call
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+         method: "POST",
+         headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "HTTP-Referer": "https://darbw.netlify.app", // required by OpenRouter
+            "X-Title": "Bar Al-Walidayn Academy",
+            "Content-Type": "application/json"
+         },
+         body: JSON.stringify({
+            "model": process.env.OPENROUTER_MODEL || "google/gemini-2.0-flash-exp:free", // 🚀 Gemini 2.0 Flash (Fast & Multimodal)
+            "messages": [
+               { role: "system", content: ACADEMY_MASTER_PROMPT },
+               ...messages,
+            ],
+            "temperature": 0.3,
+            "top_p": 0.9,
+         })
       });
 
-      res.status(200).json({ content: response.choices[0].message.content });
+      if (!response.ok) {
+         const errText = await response.text();
+         throw new Error(`OpenRouter API Error: ${response.status} - ${errText}`);
+      }
+
+      const data = await response.json();
+      const aiContent = data.choices[0].message.content;
+
+      res.status(200).json({ content: aiContent });
    } catch (error) {
       console.error("Backend Error:", error);
       res.status(500).json({
