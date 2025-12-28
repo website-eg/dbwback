@@ -9,7 +9,7 @@
         },
         {
           "key": "Access-Control-Allow-Origin",
-          "value": "https://darbw.netlify.app"
+          "value": "*"
         },
         {
           "key": "Access-Control-Allow-Methods",
