@@ -101,7 +101,7 @@ export default async function handler(req, res) {
             "Content-Type": "application/json"
          },
          body: JSON.stringify({
-            "model": process.env.OPENROUTER_MODEL || "google/gemini-2.0-flash-exp:free", // 🚀 Gemini 2.0 Flash (Fast & Multimodal)
+            "model": process.env.OPENROUTER_MODEL || "deepseek/deepseek-chat:free", // 🚀 DeepSeek Chat (Stable & Free)
             "messages": [
                { role: "system", content: ACADEMY_MASTER_PROMPT },
                ...messages,
