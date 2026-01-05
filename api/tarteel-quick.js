@@ -51,29 +51,44 @@ export default async function handler(req, res) {
         const whisperData = await whisperResponse.json();
         const detected_text = whisperData.text?.trim() || '';
 
-        // 4. Simple word-level comparison
+        // 4. Fuzzy word-level comparison using Levenshtein distance
         const expectedWords = normalizeArabic(expected_text).split(/\s+/).filter(Boolean);
         const detectedWords = normalizeArabic(detected_text).split(/\s+/).filter(Boolean);
 
-        let matches = 0;
-        const minLen = Math.min(expectedWords.length, detectedWords.length);
+        let totalScore = 0;
+        let matchedCount = 0;
 
-        for (let i = 0; i < minLen; i++) {
-            if (expectedWords[i] === detectedWords[i]) matches++;
+        // Compare each expected word with best matching detected word
+        for (let i = 0; i < expectedWords.length; i++) {
+            const expected = expectedWords[i];
+            let bestMatch = 0;
+
+            // Look for best match in nearby words (±2 positions)
+            for (let j = Math.max(0, i - 2); j < Math.min(detectedWords.length, i + 3); j++) {
+                const similarity = calculateSimilarity(expected, detectedWords[j]);
+                bestMatch = Math.max(bestMatch, similarity);
+            }
+
+            if (bestMatch >= 0.6) { // 60% similarity = match
+                matchedCount++;
+            }
+            totalScore += bestMatch;
         }
 
         const score = expectedWords.length > 0
-            ? Math.round((matches / expectedWords.length) * 100)
+            ? Math.round((totalScore / expectedWords.length) * 100)
             : 0;
 
-        // 5. Return result
+        // 5. Return result (lowered threshold to 60%)
         res.status(200).json({
-            status: score >= 80 ? 'success' : 'needs_improvement',
+            status: score >= 60 ? 'success' : 'needs_improvement',
             score,
             detected_text,
             expected_text,
             mode: 'quick',
-            message: score >= 80
+            matched_words: matchedCount,
+            total_words: expectedWords.length,
+            message: score >= 60
                 ? 'أحسنت! التلاوة صحيحة ✅'
                 : `حاول مرة أخرى، النتيجة: ${score}%`
         });
@@ -94,5 +109,41 @@ function normalizeArabic(text) {
         .replace(/[أإآ]/g, 'ا') // توحيد الألف
         .replace(/ة/g, 'ه') // التاء المربوطة
         .replace(/ى/g, 'ي') // الألف المقصورة
+        .replace(/ء/g, '')  // إزالة الهمزة
         .trim();
 }
+
+// حساب التشابه باستخدام Levenshtein Distance
+function calculateSimilarity(str1, str2) {
+    if (!str1 || !str2) return 0;
+    if (str1 === str2) return 1;
+
+    const len1 = str1.length;
+    const len2 = str2.length;
+
+    // Quick check for containment
+    if (str1.includes(str2) || str2.includes(str1)) {
+        return Math.min(len1, len2) / Math.max(len1, len2);
+    }
+
+    // Levenshtein distance
+    const matrix = Array(len1 + 1).fill(null).map(() => Array(len2 + 1).fill(0));
+
+    for (let i = 0; i <= len1; i++) matrix[i][0] = i;
+    for (let j = 0; j <= len2; j++) matrix[0][j] = j;
+
+    for (let i = 1; i <= len1; i++) {
+        for (let j = 1; j <= len2; j++) {
+            const cost = str1[i - 1] === str2[j - 1] ? 0 : 1;
+            matrix[i][j] = Math.min(
+                matrix[i - 1][j] + 1,
+                matrix[i][j - 1] + 1,
+                matrix[i - 1][j - 1] + cost
+            );
+        }
+    }
+
+    const distance = matrix[len1][len2];
+    return 1 - (distance / Math.max(len1, len2));
+}
+

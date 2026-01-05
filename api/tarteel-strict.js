@@ -54,36 +54,31 @@ export default async function handler(req, res) {
         const detected_text = whisperData.text?.trim() || '';
 
         // 3. Call Gemini Flash for intelligent comparison
-        const geminiPrompt = `أنت معلم قرآن متخصص في تصحيح التلاوة.
+        const geminiPrompt = `قارن بين النصين التالين بدقة:
+المتوقع: "${expected_text}"
+المكتشف: "${detected_text}"
 
-النص المطلوب: "${expected_text}"
-النص المنطوق: "${detected_text}"
-
-قارن بين النصين وأعطني:
-1. نسبة الصحة (0-100)
-2. الكلمات الخاطئة إن وجدت مع التصحيح
-3. ملاحظات على التجويد (إذا كان هناك خطأ واضح)
-
-أجب بصيغة JSON فقط بهذا الشكل:
+أعطني النتيجة بصيغة JSON فقط:
 {
-  "score": 85,
-  "errors": [
-    {"wrong": "كلمة خاطئة", "correct": "كلمة صحيحة", "position": 3}
-  ],
-  "tajweed_notes": "ملاحظة على التجويد",
-  "feedback": "رسالة تشجيعية قصيرة"
+  "score": نسبة مئوية (رقم),
+  "errors": [{"wrong": "الخاطئة", "correct": "الصحيحة", "position": رقم}],
+  "tajweed_notes": "ملاحظة مختصرة جداً",
+  "feedback": "رسالة تشجيعية مختصرة"
 }`;
 
         const geminiResponse = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
             {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ parts: [{ text: geminiPrompt }] }],
+                    contents: [{
+                        parts: [{ text: geminiPrompt }]
+                    }],
                     generationConfig: {
-                        temperature: 0.1,
-                        maxOutputTokens: 1024,
+                        temperature: 0.3,
+                        maxOutputTokens: 512, // Reduced to prevent timeout
+                        responseMimeType: "application/json"
                     }
                 })
             }
