@@ -27,26 +27,61 @@ export default async function handler(req, res) {
       timeZone: "Africa/Cairo",
       weekday: "long",
     });
+    const dayCode = getDayCode(dayName); // تحويل Saturday -> Sat
 
     console.log(`📅 Running Auto Absence for: ${todayDateStr} (${dayName})`);
 
-    // التحقق من أيام العمل (السبت، الإثنين، الأربعاء)
-    const allowedDays = ["Saturday", "Monday", "Wednesday"];
-    if (!allowedDays.includes(dayName)) {
-      return res
-        .status(200)
-        .json({ message: `Today is ${dayName}, skipping auto-absence.` });
+    // ============================================================
+    // 2. التحقق من العطل أولاً
+    // ============================================================
+    const holidaysSnap = await db.collection("app_settings").doc("holidays").get();
+    const holidaysData = holidaysSnap.exists ? holidaysSnap.data() : { holidays: [] };
+    const holidays = holidaysData.holidays || [];
+
+    // التحقق إذا كان اليوم ضمن فترة عطلة
+    const isHoliday = holidays.some(h => {
+      return todayDateStr >= h.startDate && todayDateStr <= h.endDate;
+    });
+
+    if (isHoliday) {
+      const holidayName = holidays.find(h => todayDateStr >= h.startDate && todayDateStr <= h.endDate)?.name || "عطلة";
+      console.log(`🏖️ Today is a holiday: ${holidayName}`);
+      return res.status(200).json({
+        message: `تم تخطي الغياب التلقائي - اليوم ${holidayName}`,
+        skipped: true,
+        reason: "holiday",
+        holidayName
+      });
     }
 
     // ============================================================
-    // 2. جلب جميع الطلاب (بدون تقيد بنوع معين لضمان شمول كل الحلقات)
+    // 3. جلب إعدادات النظام
+    // ============================================================
+    const settingsSnap = await db.collection("app_settings").doc("rules").get();
+    const settings = settingsSnap.exists ? settingsSnap.data() : {
+      resident: { requiredDays: ["Sat", "Mon", "Wed"] },
+      expat: { requiredDays: [] }
+    };
+
+    // التحقق من أيام العمل للمقيمين (الأساسية)
+    const residentRequiredDays = settings.resident?.requiredDays || ["Sat", "Mon", "Wed"];
+
+    if (!residentRequiredDays.includes(dayCode)) {
+      console.log(`📆 Today (${dayCode}) is not a required day for residents`);
+      return res.status(200).json({
+        message: `Today is ${dayName} (${dayCode}), not in required days: ${residentRequiredDays.join(', ')}, skipping auto-absence.`,
+        skipped: true,
+        reason: "not_required_day"
+      });
+    }
+
+    // ============================================================
+    // 4. جلب جميع الطلاب
     // ============================================================
     const studentsSnap = await db.collection("students").get();
 
     if (studentsSnap.empty) {
-      return res
-        .status(200)
-        .json({ message: "No students found in the database." });
+      return res.status(200).json({ message: "No students found in the database." });
     }
 
     const allStudents = [];
@@ -63,7 +98,7 @@ export default async function handler(req, res) {
       Array.from(detectedHalaqat)
     );
 
-    // 3. جلب سجلات الحضور لهذا اليوم لتجنب تكرار التحضير
+    // 5. جلب سجلات الحضور لهذا اليوم لتجنب تكرار التحضير
     const attendanceSnap = await db
       .collection("attendance")
       .where("date", "==", todayDateStr)
@@ -74,20 +109,34 @@ export default async function handler(req, res) {
       processedStudentIds.add(doc.data().studentId);
     });
 
-    // 4. تحديد الطلاب الذين لم يتم رصدهم (لا حاضر ولا غائب)
-    const studentsToMarkAbsent = allStudents.filter(
-      (s) => !processedStudentIds.has(s.id)
-    );
+    // 6. تحديد الطلاب الذين لم يتم رصدهم (لا حاضر ولا غائب)
+    // مع مراعاة نوع الطالب (مقيم/مغترب)
+    const studentsToMarkAbsent = allStudents.filter((s) => {
+      if (processedStudentIds.has(s.id)) return false;
+
+      // التحقق من أيام الطالب حسب نوعه
+      const isExpat = s.isExpat || s.type === 'expat';
+      const studentRequiredDays = isExpat
+        ? (settings.expat?.requiredDays || [])
+        : residentRequiredDays;
+
+      // إذا كان اليوم ليس من أيام هذا الطالب، لا نسجل غيابه
+      if (studentRequiredDays.length > 0 && !studentRequiredDays.includes(dayCode)) {
+        return false;
+      }
+
+      return true;
+    });
 
     if (studentsToMarkAbsent.length === 0) {
-      return res
-        .status(200)
-        .json({
-          message: "All students across all halaqat are already processed.",
-        });
+      return res.status(200).json({
+        message: "All students across all halaqat are already processed or not required today.",
+        date: todayDateStr,
+        requiredDays: residentRequiredDays
+      });
     }
 
-    // 5. تسجيل الغياب بنظام الـ Batch
+    // 7. تسجيل الغياب بنظام الـ Batch
     const batches = [];
     let batch = db.batch();
     let count = 0;
@@ -126,9 +175,27 @@ export default async function handler(req, res) {
       marked_count: studentsToMarkAbsent.length,
       processed_groups: Array.from(detectedHalaqat),
       date: todayDateStr,
+      settings_used: {
+        residentDays: residentRequiredDays,
+        expatDays: settings.expat?.requiredDays || []
+      }
     });
   } catch (error) {
     console.error("Auto Absence Error:", error);
     return res.status(500).json({ error: error.message });
   }
+}
+
+// Helper: تحويل اسم اليوم الكامل إلى الاختصار
+function getDayCode(dayName) {
+  const map = {
+    'Saturday': 'Sat',
+    'Sunday': 'Sun',
+    'Monday': 'Mon',
+    'Tuesday': 'Tue',
+    'Wednesday': 'Wed',
+    'Thursday': 'Thu',
+    'Friday': 'Fri'
+  };
+  return map[dayName] || dayName;
 }

@@ -60,11 +60,11 @@ export default async function handler(req, res) {
     );
 
     // ============================================================
-    // 4. جلب الطلاب الحاضرين فعلياً خلال هذه المدة
+    // 4. جلب الطلاب الحاضرين فعلياً خلال هذه المدة (يشمل السرد)
     // ============================================================
     const attendanceSnap = await db
       .collection("attendance")
-      .where("status", "==", "present")
+      .where("status", "in", ["present", "sard"])
       .where("date", ">=", cutoffDateStr)
       .get();
 
