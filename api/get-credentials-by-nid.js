@@ -60,8 +60,8 @@ export default async function handler(req, res) {
         const studentDoc = snapshot.docs[0];
         const student = studentDoc.data();
 
-        // التحقق من اكتمال البيانات
-        if (!student.code || !student.password) {
+        // التحقق من وجود الكود على الأقل
+        if (!student.code) {
             return res.status(400).json({
                 error: "بيانات الدخول غير مكتملة، يرجى مراجعة الإدارة"
             });
@@ -79,13 +79,13 @@ export default async function handler(req, res) {
             loginToken = tokenSnapshot.docs[0].id;
         }
 
-        // إرجاع البيانات
+        // إرجاع البيانات (password قد يكون فارغ لو مش متخزن)
         return res.status(200).json({
             success: true,
             data: {
                 name: student.fullName || "",
                 code: student.code,
-                password: student.password,
+                password: student.password || null, // قد يكون فارغ
                 token: loginToken || studentDoc.id
             }
         });
