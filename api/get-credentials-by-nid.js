@@ -1,4 +1,5 @@
 import admin from "firebase-admin";
+import crypto from "crypto";
 
 // تهيئة Firebase Admin
 if (!admin.apps.length) {
@@ -67,7 +68,7 @@ export default async function handler(req, res) {
             });
         }
 
-        // جلب أو إنشاء Login Token للطالب
+        // جلب Login Token الموجود أو إنشاء واحد جديد
         let loginToken = null;
         const tokenSnapshot = await db.collection("login_tokens")
             .where("studentId", "==", studentDoc.id)
@@ -76,7 +77,28 @@ export default async function handler(req, res) {
             .get();
 
         if (!tokenSnapshot.empty) {
+            // استخدام Token الموجود
             loginToken = tokenSnapshot.docs[0].id;
+        } else {
+            // إنشاء Token جديد دائم
+            loginToken = crypto.randomBytes(24).toString("base64url");
+
+            await db.collection("login_tokens").doc(loginToken).set({
+                studentId: studentDoc.id,
+                studentName: student.fullName || "طالب",
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                expiresAt: null, // دائم
+                permanent: true,
+                used: false,
+                usedAt: null,
+                createdBy: "nid-lookup" // للتتبع
+            });
+
+            // تحديث سجل الطالب بآخر Token
+            await db.collection("students").doc(studentDoc.id).update({
+                lastLoginToken: loginToken,
+                lastTokenCreatedAt: admin.firestore.FieldValue.serverTimestamp()
+            });
         }
 
         // إرجاع البيانات (password قد يكون فارغ لو مش متخزن)
@@ -85,8 +107,8 @@ export default async function handler(req, res) {
             data: {
                 name: student.fullName || "",
                 code: student.code,
-                password: student.password || null, // قد يكون فارغ
-                token: loginToken || studentDoc.id
+                password: student.password || null,
+                token: loginToken
             }
         });
 
@@ -97,3 +119,4 @@ export default async function handler(req, res) {
         });
     }
 }
+
