@@ -20,6 +20,33 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
+// ── FCM Push Notification Helper ──
+async function sendPushToStudent(studentId, title, body, dataPayload = {}) {
+    try {
+        // Student doc has a 'userId' or the student doc ID itself maps to users
+        const studentDoc = await db.collection('students').doc(studentId).get();
+        if (!studentDoc.exists) return;
+        const studentData = studentDoc.data();
+        const userId = studentData.userId || studentData.uid;
+        if (!userId) return;
+
+        const userDoc = await db.collection('users').doc(userId).get();
+        if (!userDoc.exists) return;
+        const fcmToken = userDoc.data().fcmToken;
+        if (!fcmToken) return;
+
+        await admin.messaging().send({
+            notification: { title, body },
+            data: { ...dataPayload, studentId, type: dataPayload.type || 'general' },
+            token: fcmToken,
+        });
+        console.log(`📲 Push sent to ${studentData.fullName || studentId}`);
+    } catch (err) {
+        // Don't fail the cron if a single push fails (e.g. stale token)
+        console.warn(`⚠️ Push failed for ${studentId}:`, err.code || err.message);
+    }
+}
+
 export default async function handler(req, res) {
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -48,151 +75,267 @@ export default async function handler(req, res) {
 }
 
 // ==========================================
-// ACTION 1: Auto Absent (Daily)
+// ACTION 1: Auto Absent (Daily System)
+// ==========================================
+// ==========================================
+// ACTION 1: Auto Absent (Daily System)
 // ==========================================
 async function handleAutoAbsent(req, res) {
-    const todayDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-    const dayName = new Date().toLocaleDateString("en-US", { timeZone: "Africa/Cairo", weekday: "long" });
-    const dayCode = getDayCode(dayName);
+    // Cron runs at midnight (start of next day), so we check YESTERDAY's date
+    const now = new Date();
+    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const todayDateStr = yesterday.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+    const dayName = yesterday.toLocaleDateString("en-US", { timeZone: "Africa/Cairo", weekday: "long" });
+    const dayIndex = getDayIndex(dayName); // 0=Sun, ..., 6=Sat
 
-    console.log(`📅 Running Auto Absence for: ${todayDateStr} (${dayName})`);
+    console.log(`📅 Check Auto Absence for YESTERDAY: ${todayDateStr} (${dayName}, idx:${dayIndex})`);
 
-    // Check holidays
+    // 1. Load Rules
+    const rulesSnap = await db.collection("app_settings").doc("rules").get();
+    const rulesConfig = rulesSnap.exists ? rulesSnap.data() : {};
+
+    // Check Global Auto Absent
+    const autoAbsentConfig = rulesConfig.autoAbsent || { enabled: true, days: [6, 1, 3] };
+    if (autoAbsentConfig.enabled === false) {
+        return res.status(200).json({ message: "Auto Absent System is DISABLED by admin.", skipped: true });
+    }
+
+    // Check Required Day
+    const requiredDays = autoAbsentConfig.days || [6, 1, 3];
+    if (!requiredDays.includes(dayIndex)) {
+        return res.status(200).json({ message: `Today (${dayName}) is not a required active day.`, skipped: true });
+    }
+
+    // 2. Check Global Holidays
     const holidaysSnap = await db.collection("app_settings").doc("holidays").get();
-    const holidaysData = holidaysSnap.exists ? holidaysSnap.data() : { holidays: [] };
-    const holidays = holidaysData.holidays || [];
+    const holidaysList = holidaysSnap.exists ? (holidaysSnap.data().list || []) : [];
+    const isGlobalHoliday = holidaysList.some(h => todayDateStr >= h.from && todayDateStr <= h.to);
 
-    const isHoliday = holidays.some(h => todayDateStr >= h.startDate && todayDateStr <= h.endDate);
-    if (isHoliday) {
-        const holidayName = holidays.find(h => todayDateStr >= h.startDate && todayDateStr <= h.endDate)?.name || "عطلة";
-        return res.status(200).json({ message: `تم تخطي الغياب التلقائي - اليوم ${holidayName}`, skipped: true, reason: "holiday" });
+    if (isGlobalHoliday) {
+        return res.status(200).json({ message: "Today is a Global Holiday. No absence recorded.", skipped: true });
     }
 
-    // Get settings
-    const settingsSnap = await db.collection("app_settings").doc("rules").get();
-    const settings = settingsSnap.exists ? settingsSnap.data() : { resident: { requiredDays: ["Sat", "Mon", "Wed"] }, expat: { requiredDays: [] } };
-    const residentRequiredDays = settings.resident?.requiredDays || ["Sat", "Mon", "Wed"];
+    // 3. Process Students
+    const studentsSnap = await db.collection("students").where("status", "==", "active").get();
+    if (studentsSnap.empty) return res.status(200).json({ message: "No active students found." });
 
-    if (!residentRequiredDays.includes(dayCode)) {
-        return res.status(200).json({ message: `Today is ${dayName}, not a required day`, skipped: true, reason: "not_required_day" });
-    }
-
-    // Get students
-    const studentsSnap = await db.collection("students").get();
-    if (studentsSnap.empty) return res.status(200).json({ message: "No students found." });
-
-    const allStudents = [];
-    studentsSnap.forEach((doc) => allStudents.push({ id: doc.id, ...doc.data() }));
-
-    // Get today's attendance
-    const attendanceSnap = await db.collection("attendance").where("date", "==", todayDateStr).get();
+    const batch = db.batch();
+    let opCount = 0;
+    let absentCount = 0;
     const processedStudentIds = new Set();
+
+    // Check existing attendance for today to avoid duplicates/overwrites
+    const attendanceSnap = await db.collection("attendance").where("date", "==", todayDateStr).get();
     attendanceSnap.forEach((doc) => processedStudentIds.add(doc.data().studentId));
 
-    // Filter students to mark absent
-    const studentsToMarkAbsent = allStudents.filter((s) => {
-        if (processedStudentIds.has(s.id)) return false;
-        const isExpat = s.isExpat || s.type === 'expat';
-        const studentRequiredDays = isExpat ? (settings.expat?.requiredDays || []) : residentRequiredDays;
-        if (studentRequiredDays.length > 0 && !studentRequiredDays.includes(dayCode)) return false;
-        return true;
-    });
+    for (const doc of studentsSnap.docs) {
+        const s = doc.data();
+        if (processedStudentIds.has(doc.id)) continue; // Already has record
+        if (s.type === 'reserve') continue; // Skip reserve students
 
-    if (studentsToMarkAbsent.length === 0) {
-        return res.status(200).json({ message: "All students already processed.", date: todayDateStr });
-    }
+        // Check Per-Halaqa Holiday (from holidays list)
+        const isHalaqaHoliday = holidaysList.some(h =>
+            h.halaqaId === s.halaqaId && todayDateStr >= h.from && todayDateStr <= h.to
+        );
+        if (isHalaqaHoliday) {
+            continue; // Skip this student, their halaqa is on holiday
+        }
 
-    // Batch write
-    const batches = [];
-    let batch = db.batch();
-    let count = 0;
-
-    studentsToMarkAbsent.forEach((student) => {
-        const docRef = db.collection("attendance").doc();
-        batch.set(docRef, {
-            studentId: student.id,
-            studentName: student.fullName || "Unknown",
-            halaqaId: student.halaqaId || "unknown",
-            halaqaName: student.halaqaName || "بدون حلقة",
+        // Mark Absent
+        const attRef = db.collection("attendance").doc();
+        batch.set(attRef, {
+            studentId: doc.id,
+            studentName: s.fullName || "Unknown",
+            halaqaId: s.halaqaId || "unknown",
+            halaqaName: s.halaqaName || "بدون حلقة",
             status: "absent",
             date: todayDateStr,
             recordedBy: "system_auto",
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
-        count++;
-        if (count >= 400) { batches.push(batch.commit()); batch = db.batch(); count = 0; }
-    });
 
-    if (count > 0) batches.push(batch.commit());
-    await Promise.all(batches);
+        opCount++;
+        absentCount++;
 
-    return res.status(200).json({ success: true, marked_count: studentsToMarkAbsent.length, date: todayDateStr });
+        if (opCount >= 450) {
+            await batch.commit();
+            opCount = 0;
+        }
+    }
+
+    if (opCount > 0) await batch.commit();
+
+    // Send push notifications for absences (fire & forget, don't block response)
+    // We don't await these — they happen in background
+    for (const doc of studentsSnap.docs) {
+        const s = doc.data();
+        if (processedStudentIds.has(doc.id)) continue;
+        if (s.type === 'reserve') continue;
+        const isHalaqaHoliday = holidaysList.some(h =>
+            h.halaqaId === s.halaqaId && todayDateStr >= h.from && todayDateStr <= h.to
+        );
+        if (isHalaqaHoliday) continue;
+
+        sendPushToStudent(
+            doc.id,
+            '⚠️ تسجيل غياب',
+            `تم تسجيل غيابك ليوم ${todayDateStr}. إذا كنت حاضراً تواصل مع المعلم.`,
+            { type: 'absence', date: todayDateStr }
+        );
+    }
+
+    return res.status(200).json({ success: true, marked_count: absentCount, date: todayDateStr });
 }
 
 // ==========================================
-// ACTION 2: Check Absence (Monthly alerts)
+// ACTION 2: Check Absence (Monthly Limits & Rules)
 // ==========================================
 async function handleCheckAbsence(req, res) {
     console.log("🔄 Running Monthly Absence Check...");
 
-    const configSnap = await db.collection("app_settings").doc("absence_config").get();
-    const absenceLimitDays = configSnap.exists ? configSnap.data().limitDays || 60 : 60;
+    // 1. Load Rules
+    const rulesSnap = await db.collection("app_settings").doc("rules").get();
+    const rulesConfig = rulesSnap.exists ? rulesSnap.data() : {};
+    const demotionSettings = rulesConfig.demotion || { enabled: true, maxMonthlyUnexcused: 4, maxMonthlyExcused: 2 };
+    const halaqaPairings = rulesConfig.halaqaPairings || {}; // { halaqaId: reserveHalaqaId }
 
-    const today = new Date();
-    const cutoffDate = new Date();
-    cutoffDate.setDate(today.getDate() - absenceLimitDays);
-    const cutoffDateStr = cutoffDate.toISOString().split("T")[0];
-
-    // Get main students
-    const studentsSnap = await db.collection("students").where("type", "==", "main").get();
-    if (studentsSnap.empty) return res.status(200).json({ message: "No main students found." });
-
-    const mainStudents = [];
-    studentsSnap.forEach((doc) => mainStudents.push({ id: doc.id, ...doc.data() }));
-
-    // Get attended students
-    const attendanceSnap = await db.collection("attendance").where("status", "in", ["present", "sard"]).where("date", ">=", cutoffDateStr).get();
-    const attendedStudentIds = new Set();
-    attendanceSnap.forEach((doc) => attendedStudentIds.add(doc.data().studentId));
-
-    // Get excused students
-    const activeLeavesSnap = await db.collection("leave_requests").where("status", "==", "approved").where("endDate", ">=", admin.firestore.Timestamp.now()).get();
-    const excusedStudentIds = new Set();
-    activeLeavesSnap.forEach((doc) => excusedStudentIds.add(doc.data().studentId));
-
-    // Find candidates
-    const candidatesForDemotion = mainStudents.filter((s) => !attendedStudentIds.has(s.id) && !excusedStudentIds.has(s.id));
-
-    if (candidatesForDemotion.length === 0) {
-        return res.status(200).json({ message: "No students to alert about." });
+    if (demotionSettings.enabled === false) {
+        return res.status(200).json({ message: "Demotion check is DISABLED.", skipped: true });
     }
 
-    // Create alerts
+    const globalMaxUnexcused = demotionSettings.maxMonthlyUnexcused ?? 4;
+    const globalMaxExcused = demotionSettings.maxMonthlyExcused ?? 2;
+
+    // 2. Determine Start of Current Month
+    const now = new Date();
+    // Start of month: YYYY-MM-01
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    // Format as YYYY-MM-DD in local time (or just use ISO split for simplicity if stored as YYYY-MM-DD)
+    // IMPORTANT: Stored dates are likely strings YYYY-MM-DD.
+    // We construct start string:
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const startOfMonthStr = `${year}-${month}-01`;
+
+    // 3. Process Active Main Students
+    const studentsSnap = await db.collection("students")
+        .where("type", "==", "main")
+        .where("status", "==", "active")
+        .get();
+
+    if (studentsSnap.empty) return res.status(200).json({ message: "No active students." });
+
+    // 4. Batch Process - We need to count absences per student for THIS MONTH
+    // Optimization: Fetch ALL 'absent'/'excused' attendance for >= startOfMonthStr
+    // Then group by studentId in memory.
+    const attSnap = await db.collection("attendance")
+        .where("date", ">=", startOfMonthStr)
+        .where("status", "in", ["absent", "excused"])
+        .get();
+
+    const statsMap = {}; // { studentId: { absent: 0, excused: 0 } }
+
+    attSnap.forEach(doc => {
+        const d = doc.data();
+        if (!statsMap[d.studentId]) statsMap[d.studentId] = { absent: 0, excused: 0 };
+
+        if (d.status === 'absent') statsMap[d.studentId].absent++;
+        else if (d.status === 'excused') statsMap[d.studentId].excused++;
+    });
+
+    const alerts = [];
+
+    studentsSnap.forEach(doc => {
+        const s = doc.data();
+        const stats = statsMap[doc.id] || { absent: 0, excused: 0 };
+
+        // Determine Rules for Student (Global limits apply to all)
+        const limitUnexcused = globalMaxUnexcused;
+        const limitExcused = globalMaxExcused;
+        const globalMaxTotal = demotionSettings.maxMonthlyTotal ?? 6;
+        const limitTotal = globalMaxTotal;
+
+        // Target reserve from halaqaPairings
+        const targetReserveId = halaqaPairings[s.halaqaId] || null;
+
+        let reason = null;
+        let triggerType = null;
+
+        const totalAbsence = stats.absent + stats.excused;
+
+        if (stats.absent >= limitUnexcused) {
+            reason = `تجاوز حد الغياب الشهري (${stats.absent}/${limitUnexcused})`;
+            triggerType = 'unexcused';
+        } else if (stats.excused >= limitExcused) {
+            reason = `تجاوز حد الأعذار الشهري (${stats.excused}/${limitExcused})`;
+            triggerType = 'excused';
+        } else if (totalAbsence >= limitTotal) {
+            reason = `تجاوز الحد الكلي للغياب (${totalAbsence}/${limitTotal})`;
+            triggerType = 'total_cap';
+        }
+
+        if (reason) {
+            alerts.push({
+                studentId: doc.id,
+                studentName: s.fullName,
+                halaqaId: s.halaqaId,
+                halaqaName: s.halaqaName,
+                reason: reason,
+                stats: { ...stats, total: totalAbsence },
+                targetReserveId: targetReserveId,
+                type: triggerType
+            });
+        }
+    });
+
+    if (alerts.length === 0) {
+        return res.status(200).json({ message: "No violations found." });
+    }
+
+    // 5. Create Alerts
     const batch = db.batch();
-    candidatesForDemotion.forEach((student) => {
-        const alertRef = db.collection("demotion_alerts").doc(student.id);
-        batch.set(alertRef, {
-            studentId: student.id,
-            studentName: student.fullName || "مجهول",
-            halaqaName: student.halaqaName || "بدون حلقة",
-            lastCutoffDate: cutoffDateStr,
-            absenceDays: absenceLimitDays,
+    // Use composite ID: demotion_{studentId}_{YYYYMM}
+    const alertMonthId = `${year}${month}`;
+
+    alerts.forEach(a => {
+        const alertId = `demotion_${a.studentId}_${alertMonthId}`;
+        const ref = db.collection("demotion_alerts").doc(alertId);
+
+        batch.set(ref, {
+            studentId: a.studentId,
+            studentName: a.studentName || "Unknown",
+            halaqaId: a.halaqaId,
+            halaqaName: a.halaqaName,
+            reason: a.reason,
+            stats: a.stats,
+            targetReserveId: a.targetReserveId, // Where they should go
             status: "pending",
-            reason: `غائب لمدة تتجاوز ${absenceLimitDays} يوم بدون عذر`,
             createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            month: alertMonthId
         }, { merge: true });
     });
 
     await batch.commit();
-    return res.status(200).json({ success: true, alerts_created: candidatesForDemotion.length, limit_used: absenceLimitDays });
+
+    // Send push notifications for demotion alerts
+    for (const a of alerts) {
+        sendPushToStudent(
+            a.studentId,
+            '🔴 تنبيه تجاوز الحد',
+            `${a.reason}. قد يتم نقلك إلى حلقة الاحتياط.`,
+            { type: 'demotion', reason: a.reason }
+        );
+    }
+
+    return res.status(200).json({ success: true, alerts_created: alerts.length });
 }
 
 // ==========================================
 // ACTION 3: Agent Report (Telegram)
 // ==========================================
 async function handleAgentReport(req, res) {
+    // Same implementation as before, lightly cleaned up
     const todayDateStr = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-
     const snapshot = await db.collection('attendance').where('date', '==', todayDateStr).where('status', '==', 'absent').get();
 
     if (snapshot.empty) return res.json({ message: "لا يوجد غياب اليوم ✅" });
@@ -200,9 +343,7 @@ async function handleAgentReport(req, res) {
     let message = `🚨 **تقرير الغياب اليومي** 🚨\n📅 التاريخ: ${todayDateStr}\n\nالطلاب المتغيبون:\n`;
     let count = 0;
     snapshot.forEach(doc => { count++; message += `${count}. **${doc.data().studentName}** (${doc.data().halaqaName})\n`; });
-    message += `\n⚠️ إجمالي الغياب: ${count} طالب`;
 
-    // Send to Telegram if configured
     const ADMIN_CHANNEL_ID = process.env.ADMIN_TELEGRAM_CHAT_ID;
     if (ADMIN_CHANNEL_ID && process.env.TELEGRAM_BOT_TOKEN) {
         try {
@@ -213,12 +354,15 @@ async function handleAgentReport(req, res) {
             });
         } catch (e) { console.warn('Telegram send failed:', e); }
     }
-
-    return res.json({ success: true, sent_to: count, message });
+    return res.json({ success: true, sent_to: count });
 }
 
-// Helper
-function getDayCode(dayName) {
-    const map = { 'Saturday': 'Sat', 'Sunday': 'Sun', 'Monday': 'Mon', 'Tuesday': 'Tue', 'Wednesday': 'Wed', 'Thursday': 'Thu', 'Friday': 'Fri' };
-    return map[dayName] || dayName;
+// Helpers
+function getDayIndex(dayName) {
+    // Standardizes day names to 0-6 index (Sunday=0)
+    const map = {
+        'Sunday': 0, 'Monday': 1, 'Tuesday': 2, 'Wednesday': 3, 'Thursday': 4, 'Friday': 5, 'Saturday': 6,
+        'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6
+    };
+    return map[dayName] ?? -1;
 }
