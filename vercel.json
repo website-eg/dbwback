@@ -24,12 +24,16 @@
   ],
   "crons": [
     {
+      "path": "/api/cron/auto-absent",
+      "schedule": "0 22 * * *"
+    },
+    {
       "path": "/api/cron/check-absence",
       "schedule": "30 22 * * *"
     },
     {
-      "path": "/api/cron/auto-absent",
-      "schedule": "0 22 * * *"
+      "path": "/api/cron/check-promotion",
+      "schedule": "0 0 1 * *"
     }
   ]
 }

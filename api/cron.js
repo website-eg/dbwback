@@ -63,6 +63,8 @@ export default async function handler(req, res) {
                 return await handleAutoAbsent(req, res);
             case 'check-absence':
                 return await handleCheckAbsence(req, res);
+            case 'check-promotion':
+                return await handleCheckPromotion(req, res);
             case 'agent-report':
                 return await handleAgentReport(req, res);
             default:
@@ -109,7 +111,7 @@ async function handleAutoAbsent(req, res) {
     // 2. Check Global Holidays
     const holidaysSnap = await db.collection("app_settings").doc("holidays").get();
     const holidaysList = holidaysSnap.exists ? (holidaysSnap.data().list || []) : [];
-    const isGlobalHoliday = holidaysList.some(h => todayDateStr >= h.from && todayDateStr <= h.to);
+    const isGlobalHoliday = holidaysList.some(h => !h.halaqaId && todayDateStr >= h.from && todayDateStr <= h.to);
 
     if (isGlobalHoliday) {
         return res.status(200).json({ message: "Today is a Global Holiday. No absence recorded.", skipped: true });
@@ -365,4 +367,115 @@ function getDayIndex(dayName) {
         'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6
     };
     return map[dayName] ?? -1;
+}
+
+// ==========================================
+// ACTION 4: Check Promotion (Monthly Reserve → Main)
+// ==========================================
+async function handleCheckPromotion(req, res) {
+    console.log("🚀 Running Monthly Promotion Check...");
+
+    // 1. Load promotion rules
+    const rulesSnap = await db.collection("app_settings").doc("rules").get();
+    const rulesData = rulesSnap.exists ? rulesSnap.data() : {};
+    const promotion = rulesData.promotion || {};
+
+    if (promotion.enabled === false) {
+        return res.status(200).json({ message: "Promotion system is DISABLED.", skipped: true });
+    }
+
+    const minAttendance = promotion.minAttendance ?? 12;
+    const minSessionScore = promotion.minSessionScore ?? 12;
+
+    // 2. Determine PREVIOUS month range (cron runs on 1st, so check last month)
+    const now = new Date();
+    const prevMonth = now.getMonth() === 0 ? 11 : now.getMonth() - 1;
+    const prevYear = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+    const firstDay = `${prevYear}-${String(prevMonth + 1).padStart(2, '0')}-01`;
+    const lastDayDate = new Date(prevYear, prevMonth + 1, 0);
+    const lastDay = `${prevYear}-${String(prevMonth + 1).padStart(2, '0')}-${String(lastDayDate.getDate()).padStart(2, '0')}`;
+
+    console.log(`📅 Checking promotion for period: ${firstDay} → ${lastDay}`);
+
+    // 3. Find target halaqa
+    const targetSnap = await db.collection("halaqat").where("name", "==", "أساسي جديد").limit(1).get();
+    if (targetSnap.empty) {
+        return res.status(200).json({ message: "No 'أساسي جديد' halaqa found. Skipping.", skipped: true });
+    }
+    const targetId = targetSnap.docs[0].id;
+    const targetName = targetSnap.docs[0].data().name;
+
+    // 4. Get all reserve students
+    const reserveSnap = await db.collection("students").where("type", "==", "reserve").where("status", "==", "active").get();
+    if (reserveSnap.empty) {
+        return res.status(200).json({ message: "No active reserve students found." });
+    }
+
+    const batch = db.batch();
+    let promotedCount = 0;
+    let opCount = 0;
+
+    for (const doc of reserveSnap.docs) {
+        const sid = doc.id;
+        const sData = doc.data();
+
+        // 5. Check attendance count
+        const attSnap = await db.collection("attendance")
+            .where("studentId", "==", sid)
+            .where("date", ">=", firstDay)
+            .where("date", "<=", lastDay)
+            .where("status", "in", ["present", "sard"])
+            .get();
+
+        if (attSnap.size < minAttendance) continue;
+
+        // 6. Check scores for each session
+        const progSnap = await db.collection("progress")
+            .where("studentId", "==", sid)
+            .where("date", ">=", firstDay)
+            .where("date", "<=", lastDay)
+            .get();
+
+        if (progSnap.empty) continue;
+
+        let allScoresMet = true;
+        progSnap.forEach(p => {
+            const d = p.data();
+            const total = Number(d.lessonScore || 0) + Number(d.revisionScore || 0) +
+                Number(d.tilawaScore || 0) + Number(d.homeworkScore || 0);
+            if (total < minSessionScore) allScoresMet = false;
+        });
+
+        if (!allScoresMet) continue;
+
+        // 7. Promote!
+        batch.update(db.collection("students").doc(sid), {
+            type: "main",
+            halaqaId: targetId,
+            halaqaName: targetName,
+        });
+        promotedCount++;
+        opCount++;
+
+        // Send notification
+        sendPushToStudent(sid, '🎉 مبروك! تمت ترقيتك',
+            `لقد تم نقلك من الاحتياط إلى حلقة "${targetName}" بناءً على أدائك المتميز!`,
+            { type: 'promotion' }
+        );
+
+        if (opCount >= 450) {
+            await batch.commit();
+            opCount = 0;
+        }
+    }
+
+    if (opCount > 0) await batch.commit();
+
+    console.log(`🚀 Promoted ${promotedCount} students (rules: ${minAttendance} sessions, ${minSessionScore} score)`);
+    return res.status(200).json({
+        success: true,
+        promoted: promotedCount,
+        rules: { minAttendance, minSessionScore },
+        period: { from: firstDay, to: lastDay }
+    });
 }
