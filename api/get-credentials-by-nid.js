@@ -18,16 +18,15 @@ if (!admin.apps.length) {
 const db = admin.firestore();
 
 /**
- * API للحصول على بيانات الدخول بالرقم القومي
+ * API للحصول على بيانات الدخول بالرقم القومي + تغيير كلمة المرور
  * POST /api/get-credentials-by-nid
- * Body: { nationalId: string }
- * 
- * يُستخدم من صفحة تسجيل الدخول للحصول على بيانات الطالب
+ * Body: { nationalId: string }                    ← جلب البيانات
+ * Body: { nationalId: string, newPassword: string } ← تغيير كلمة المرور
  */
 export default async function handler(req, res) {
     // CORS
     res.setHeader("Access-Control-Allow-Credentials", true);
-    res.setHeader("Access-Control-Allow-Origin", "*"); // يمكن تحديد النطاق لو محتاج
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
@@ -36,7 +35,7 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: "Method Not Allowed" });
     }
 
-    const { nationalId } = req.body;
+    const { nationalId, newPassword } = req.body;
 
     // التحقق من صحة الرقم القومي
     if (!nationalId || nationalId.length !== 14 || !/^\d{14}$/.test(nationalId)) {
@@ -68,7 +67,42 @@ export default async function handler(req, res) {
             });
         }
 
-        // جلب Login Token الموجود أو إنشاء واحد جديد
+        // =====================================================
+        // 🔐 تغيير كلمة المرور (لو newPassword موجود)
+        // =====================================================
+        if (newPassword) {
+            if (newPassword.length < 6) {
+                return res.status(400).json({
+                    error: "كلمة المرور يجب أن تكون 6 أحرف على الأقل"
+                });
+            }
+
+            const email = `${student.code}@bar-parents.com`;
+            let userRecord;
+            try {
+                userRecord = await admin.auth().getUserByEmail(email);
+            } catch (e) {
+                return res.status(404).json({
+                    error: "الحساب غير موجود في نظام المصادقة"
+                });
+            }
+
+            // تغيير في Firebase Auth
+            await admin.auth().updateUser(userRecord.uid, { password: newPassword });
+
+            // تحديث في Firestore
+            await studentDoc.ref.update({ password: newPassword });
+
+            return res.status(200).json({
+                success: true,
+                message: "تم تغيير كلمة المرور بنجاح",
+                code: student.code
+            });
+        }
+
+        // =====================================================
+        // 📋 جلب بيانات الدخول (السلوك الأصلي)
+        // =====================================================
         let loginToken = null;
         const tokenSnapshot = await db.collection("login_tokens")
             .where("studentId", "==", studentDoc.id)
@@ -77,31 +111,27 @@ export default async function handler(req, res) {
             .get();
 
         if (!tokenSnapshot.empty) {
-            // استخدام Token الموجود
             loginToken = tokenSnapshot.docs[0].id;
         } else {
-            // إنشاء Token جديد دائم
             loginToken = crypto.randomBytes(24).toString("base64url");
 
             await db.collection("login_tokens").doc(loginToken).set({
                 studentId: studentDoc.id,
                 studentName: student.fullName || "طالب",
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
-                expiresAt: null, // دائم
+                expiresAt: null,
                 permanent: true,
                 used: false,
                 usedAt: null,
-                createdBy: "nid-lookup" // للتتبع
+                createdBy: "nid-lookup"
             });
 
-            // تحديث سجل الطالب بآخر Token
             await db.collection("students").doc(studentDoc.id).update({
                 lastLoginToken: loginToken,
                 lastTokenCreatedAt: admin.firestore.FieldValue.serverTimestamp()
             });
         }
 
-        // إرجاع البيانات (password قد يكون فارغ لو مش متخزن)
         return res.status(200).json({
             success: true,
             data: {

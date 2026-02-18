@@ -102,11 +102,9 @@ async function handleAutoAbsent(req, res) {
         return res.status(200).json({ message: "Auto Absent System is DISABLED by admin.", skipped: true });
     }
 
-    // Check Required Day
-    const requiredDays = autoAbsentConfig.days || [6, 1, 3];
-    if (!requiredDays.includes(dayIndex)) {
-        return res.status(200).json({ message: `Today (${dayName}) is not a required active day.`, skipped: true });
-    }
+    // Global days + per-halaqa overrides
+    const globalDays = autoAbsentConfig.days || [6, 1, 3];
+    const halaqaDays = autoAbsentConfig.halaqaDays || {}; // { halaqaId: [dayIndices] }
 
     // 2. Check Global Holidays
     const holidaysSnap = await db.collection("app_settings").doc("holidays").get();
@@ -134,6 +132,10 @@ async function handleAutoAbsent(req, res) {
         const s = doc.data();
         if (processedStudentIds.has(doc.id)) continue; // Already has record
         if (s.type === 'reserve') continue; // Skip reserve students
+
+        // Check per-halaqa active days (override), or fall back to global days
+        const activeDays = (s.halaqaId && halaqaDays[s.halaqaId]?.length > 0) ? halaqaDays[s.halaqaId] : globalDays;
+        if (!activeDays.includes(dayIndex)) continue; // Not an active day for this halaqa
 
         // Check Per-Halaqa Holiday (from holidays list)
         const isHalaqaHoliday = holidaysList.some(h =>
@@ -386,6 +388,7 @@ async function handleCheckPromotion(req, res) {
 
     const minAttendance = promotion.minAttendance ?? 12;
     const minSessionScore = promotion.minSessionScore ?? 12;
+    const halaqaPairings = promotion.halaqaPairings || {}; // { reserveHalaqaId: targetMainHalaqaId }
 
     // 2. Determine PREVIOUS month range (cron runs on 1st, so check last month)
     const now = new Date();
@@ -397,13 +400,17 @@ async function handleCheckPromotion(req, res) {
 
     console.log(`📅 Checking promotion for period: ${firstDay} → ${lastDay}`);
 
-    // 3. Find target halaqa
-    const targetSnap = await db.collection("halaqat").where("name", "==", "أساسي جديد").limit(1).get();
-    if (targetSnap.empty) {
-        return res.status(200).json({ message: "No 'أساسي جديد' halaqa found. Skipping.", skipped: true });
+    // 3. Pre-load target halaqat names from pairings
+    const halaqatCache = {};
+    for (const [reserveId, targetId] of Object.entries(halaqaPairings)) {
+        if (!targetId) continue;
+        const hSnap = await db.collection("halaqat").doc(targetId).get();
+        if (hSnap.exists) halaqatCache[reserveId] = { id: targetId, name: hSnap.data().name };
     }
-    const targetId = targetSnap.docs[0].id;
-    const targetName = targetSnap.docs[0].data().name;
+
+    if (Object.keys(halaqatCache).length === 0) {
+        return res.status(200).json({ message: "لم يتم تحديد أي ربط لحلقات الاحتياط. يرجى ضبط الإعدادات.", skipped: true });
+    }
 
     // 4. Get all reserve students
     const reserveSnap = await db.collection("students").where("type", "==", "reserve").where("status", "==", "active").get();
@@ -418,6 +425,11 @@ async function handleCheckPromotion(req, res) {
     for (const doc of reserveSnap.docs) {
         const sid = doc.id;
         const sData = doc.data();
+        const studentHalaqaId = sData.halaqaId;
+
+        // Check if this student's halaqa has a target mapping
+        const target = halaqatCache[studentHalaqaId];
+        if (!target) continue; // No pairing for this reserve halaqa
 
         // 5. Check attendance count
         const attSnap = await db.collection("attendance")
@@ -448,18 +460,18 @@ async function handleCheckPromotion(req, res) {
 
         if (!allScoresMet) continue;
 
-        // 7. Promote!
+        // 7. Promote to paired target halaqa!
         batch.update(db.collection("students").doc(sid), {
             type: "main",
-            halaqaId: targetId,
-            halaqaName: targetName,
+            halaqaId: target.id,
+            halaqaName: target.name,
         });
         promotedCount++;
         opCount++;
 
         // Send notification
         sendPushToStudent(sid, '🎉 مبروك! تمت ترقيتك',
-            `لقد تم نقلك من الاحتياط إلى حلقة "${targetName}" بناءً على أدائك المتميز!`,
+            `لقد تم نقلك من الاحتياط إلى حلقة "${target.name}" بناءً على أدائك المتميز!`,
             { type: 'promotion' }
         );
 
