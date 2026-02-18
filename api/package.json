@@ -1,0 +1,12 @@
+{
+  "name": "darbw-api",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "api/command-parser.js",
+  "dependencies": {
+    "firebase-admin": "^11.11.0"
+  },
+  "engines": {
+    "node": "20.x"
+  }
+}
