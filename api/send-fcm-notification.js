@@ -14,6 +14,8 @@ if (!admin.apps.length) {
     });
 }
 
+const db = admin.firestore();
+
 /**
  * API to send Push Notification via FCM
  * POST /api/send-fcm-notification
@@ -45,14 +47,58 @@ export default async function handler(req, res) {
             },
             data: data || {},
             token: token,
+            // إعدادات Android عالية الأولوية
+            android: {
+                priority: "high",
+                notification: {
+                    channelId: "high_importance_channel",
+                    priority: "max",
+                    defaultSound: true,
+                    defaultVibrateTimings: true,
+                },
+            },
         };
 
         const response = await admin.messaging().send(message);
-        
+
         return res.status(200).json({ success: true, messageId: response });
 
     } catch (error) {
-        console.error("FCM Send Error:", error);
+        console.error("FCM Send Error:", error.code, error.message);
+
+        // تنظيف التوكن المنتهي تلقائياً
+        const isStaleToken =
+            error.code === "messaging/registration-token-not-registered" ||
+            error.code === "messaging/invalid-registration-token" ||
+            error.code === "messaging/not-found" ||
+            (error.message && error.message.includes("Requested entity was not found"));
+
+        if (isStaleToken) {
+            console.log(`🗑️ Cleaning stale token: ${token.substring(0, 20)}...`);
+            try {
+                // البحث عن المستخدم بالتوكن وحذفه
+                const usersSnap = await db
+                    .collection("users")
+                    .where("fcmToken", "==", token)
+                    .limit(1)
+                    .get();
+
+                if (!usersSnap.empty) {
+                    const userDoc = usersSnap.docs[0];
+                    await userDoc.ref.update({ fcmToken: admin.firestore.FieldValue.delete() });
+                    console.log(`✅ Removed stale token from user: ${userDoc.id}`);
+                }
+            } catch (cleanupErr) {
+                console.warn("⚠️ Token cleanup failed:", cleanupErr.message);
+            }
+
+            return res.status(200).json({
+                success: false,
+                staleToken: true,
+                message: "Token was stale and has been cleaned up"
+            });
+        }
+
         return res.status(500).json({ error: error.message });
     }
 }

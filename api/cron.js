@@ -39,11 +39,28 @@ async function sendPushToStudent(studentId, title, body, dataPayload = {}) {
             notification: { title, body },
             data: { ...dataPayload, studentId, type: dataPayload.type || 'general' },
             token: fcmToken,
+            android: { priority: "high" },
         });
         console.log(`📲 Push sent to ${studentData.fullName || studentId}`);
     } catch (err) {
-        // Don't fail the cron if a single push fails (e.g. stale token)
-        console.warn(`⚠️ Push failed for ${studentId}:`, err.code || err.message);
+        // تنظيف التوكن المنتهي تلقائياً
+        if (
+            err.code === "messaging/registration-token-not-registered" ||
+            err.code === "messaging/invalid-registration-token"
+        ) {
+            try {
+                const studentDoc = await db.collection('students').doc(studentId).get();
+                const userId = studentDoc.data()?.userId || studentDoc.data()?.uid;
+                if (userId) {
+                    await db.collection('users').doc(userId).update({
+                        fcmToken: admin.firestore.FieldValue.delete(),
+                    });
+                    console.log(`🗑️ Cleaned stale token for ${studentId}`);
+                }
+            } catch (_) { }
+        } else {
+            console.warn(`⚠️ Push failed for ${studentId}:`, err.code || err.message);
+        }
     }
 }
 
