@@ -18,7 +18,29 @@ if (!admin.apps.length) {
 }
 
 const db = admin.firestore();
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+
+// ─────────────────────────────────────────────
+// MULTI-KEY ROUND ROBIN (supports up to 10 keys)
+// ─────────────────────────────────────────────
+const GROQ_KEYS = [
+    process.env.GROQ_API_KEY,
+    process.env.GROQ_API_KEY_2,
+    process.env.GROQ_API_KEY_3,
+    process.env.GROQ_API_KEY_4,
+    process.env.GROQ_API_KEY_5,
+    process.env.GROQ_API_KEY_6,
+    process.env.GROQ_API_KEY_7,
+    process.env.GROQ_API_KEY_8,
+    process.env.GROQ_API_KEY_9,
+    process.env.GROQ_API_KEY_10,
+].filter(Boolean);
+
+let keyIndex = 0;
+function getNextKey() {
+    const key = GROQ_KEYS[keyIndex % GROQ_KEYS.length];
+    keyIndex++;
+    return key;
+}
 
 // ─────────────────────────────────────────────
 // SYSTEM PROMPTS
@@ -488,12 +510,21 @@ async function fetchAdminContext() {
     const today = getTodayStr();
 
     try {
-        const [studentsSnap, halaqatSnap, todayAttSnap, demotionSnap] = await Promise.all([
+        const queries = [
             db.collection('students').get(),
             db.collection('halaqat').get(),
             db.collection('attendance').where('date', '==', today).get(),
-            db.collection('demotion_alerts').orderBy('createdAt', 'desc').limit(10).get(),
-        ]);
+        ];
+
+        const [studentsSnap, halaqatSnap, todayAttSnap] = await Promise.all(queries);
+
+        // demotion_alerts might not have the index, wrap separately
+        let demotionSnap = { empty: true, forEach: () => { } };
+        try {
+            demotionSnap = await db.collection('demotion_alerts').orderBy('createdAt', 'desc').limit(10).get();
+        } catch (e) {
+            console.log('demotion_alerts query failed (index may be missing):', e.message);
+        }
 
         let ctx = '\n--- إحصائيات الأكاديمية ---';
 
@@ -563,8 +594,8 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-    if (!GROQ_API_KEY) {
-        return res.status(500).json({ error: 'GROQ_API_KEY not set.' });
+    if (!GROQ_KEYS.length) {
+        return res.status(500).json({ error: 'No GROQ API keys configured.' });
     }
 
     const { message, role, studentId, teacherId, history } = req.body;
@@ -581,20 +612,26 @@ export default async function handler(req, res) {
         switch (role) {
             case 'teacher': {
                 systemPrompt = TEACHER_PROMPT;
+                console.log('Fetching teacher context for:', teacherId || studentId);
                 const result = await fetchTeacherContext(teacherId || studentId);
                 context = result.context;
                 halaqaId = result.halaqaId;
+                console.log('Teacher context length:', context.length, 'halaqaId:', halaqaId);
                 break;
             }
             case 'admin': {
                 systemPrompt = ADMIN_PROMPT;
+                console.log('Fetching admin context...');
                 context = await fetchAdminContext();
+                console.log('Admin context length:', context.length);
                 break;
             }
             case 'student':
             default: {
                 systemPrompt = STUDENT_PROMPT;
+                console.log('Fetching student context for:', studentId);
                 context = await fetchStudentContext(studentId);
+                console.log('Student context length:', context.length);
                 break;
             }
         }
@@ -618,23 +655,37 @@ export default async function handler(req, res) {
             content: message + context
         });
 
-        // Call Groq API
-        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${GROQ_API_KEY}`,
-            },
-            body: JSON.stringify({
-                model: 'llama-3.1-8b-instant',
-                messages,
-                temperature: 0.7,
-                max_tokens: 1024,
-                response_format: { type: 'json_object' },
-            })
-        });
+        // Call Groq API with round-robin + retry on 429
+        let groqRes, groqData;
+        const maxRetries = Math.min(GROQ_KEYS.length, 3);
 
-        const groqData = await groqRes.json();
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            const apiKey = getNextKey();
+
+            groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                    model: 'llama-3.1-8b-instant',
+                    messages,
+                    temperature: 0.7,
+                    max_tokens: 1024,
+                    response_format: { type: 'json_object' },
+                })
+            });
+
+            groqData = await groqRes.json();
+
+            // If rate limited (429), try next key
+            if (groqRes.status === 429 && attempt < maxRetries - 1) {
+                console.log(`Key ${attempt + 1} rate limited, trying next...`);
+                continue;
+            }
+            break;
+        }
 
         if (!groqRes.ok) {
             console.error('Groq error:', JSON.stringify(groqData));
@@ -690,3 +741,8 @@ export default async function handler(req, res) {
         return res.status(500).json({ error: error.message });
     }
 }
+
+// Vercel: increase timeout to 30s (free tier max)
+export const config = {
+    maxDuration: 30,
+};
