@@ -1,7 +1,7 @@
 // api/ai-chat.js
-// Groq AI proxy for "روبو" — Full-featured multi-role assistant
-// Features: Quiz, Reports, Actions, Confirmation, Logging, Parent, TTS
-// Model: Llama 3.3 70B | Free tier: 30 RPM, 14,400/day
+// Groq AI proxy for "روبو" — Using NATIVE FUNCTION CALLING
+// No JSON format in prompts = smarter responses
+// Model: Llama 3.3 70B
 
 import admin from "firebase-admin";
 
@@ -22,542 +22,449 @@ const db = admin.firestore();
 const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 // ─────────────────────────────────────────────
-// SYSTEM PROMPTS (optimized for clarity)
+// CLEAN SYSTEM PROMPTS (no JSON, no action schemas)
 // ─────────────────────────────────────────────
 
-const SURA_LIST = 'الفاتحة=1,البقرة=2,آل عمران=3,النساء=4,المائدة=5,الأنعام=6,الأعراف=7,الأنفال=8,التوبة=9,يونس=10,هود=11,يوسف=12,الرعد=13,إبراهيم=14,الحجر=15,النحل=16,الإسراء=17,الكهف=18,مريم=19,طه=20,الأنبياء=21,الحج=22,المؤمنون=23,النور=24,الفرقان=25,الشعراء=26,النمل=27,القصص=28,العنكبوت=29,الروم=30,لقمان=31,السجدة=32,الأحزاب=33,سبأ=34,فاطر=35,يس=36,الصافات=37,ص=38,الزمر=39,غافر=40,فصلت=41,الشورى=42,الزخرف=43,الدخان=44,الجاثية=45,الأحقاف=46,محمد=47,الفتح=48,الحجرات=49,ق=50,الذاريات=51,الطور=52,النجم=53,القمر=54,الرحمن=55,الواقعة=56,الحديد=57,المجادلة=58,الحشر=59,الممتحنة=60,الصف=61,الجمعة=62,المنافقون=63,التغابن=64,الطلاق=65,التحريم=66,الملك=67,القلم=68,الحاقة=69,المعارج=70,نوح=71,الجن=72,المزمل=73,المدثر=74,القيامة=75,الإنسان=76,المرسلات=77,النبأ=78,النازعات=79,عبس=80,التكوير=81,الانفطار=82,المطففين=83,الانشقاق=84,البروج=85,الطارق=86,الأعلى=87,الغاشية=88,الفجر=89,البلد=90,الشمس=91,الليل=92,الضحى=93,الشرح=94,التين=95,العلق=96,القدر=97,البينة=98,الزلزلة=99,العاديات=100,القارعة=101,التكاثر=102,العصر=103,الهمزة=104,الفيل=105,قريش=106,الماعون=107,الكوثر=108,الكافرون=109,النصر=110,المسد=111,الإخلاص=112,الفلق=113,الناس=114';
-
-const CORE = `أنت "روبو" مساعد ذكي ودود لتطبيق "بِرّ الوالدين" لتحفيظ القرآن. تتحدث بالعربية مع إيموجي.
-أرجع دائماً JSON فقط. الرد العادي: {"reply":"نص"}
-تشغيل سورة: {"reply":"...","action":"play_surah","surah":رقم,"reciterId":رقم}
-القراء: العفاسي=7,عبدالباسط=1,الحصري=3,المنشاوي=5,الشريم=19`;
-
-const STUDENT_PROMPT = `${CORE}
-السور: ${SURA_LIST}
+const STUDENT_PROMPT = `أنت "روبو" مساعد ذكي ودود لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
+تتحدث بالعربية الفصحى البسيطة مع إيموجي. شخصيتك محفّزة ومشجّعة.
 
 أنت تتحدث مع طالب. ساعده في:
+- تشغيل سور القرآن بصوت القراء المتاحين
+- الإجابة عن أسئلة إسلامية ودينية بشكل مبسّط
+- تحليل أدائه (حضور، درجات، نجوم) وتحفيزه
+- اختباره في حفظ القرآن عند طلبه: اسأله "أكمل الآية..." ثم قيّم إجابته
+
+حلل البيانات المرفقة في الرسالة وقدم نصائح تحفيزية.`;
+
+const TEACHER_PROMPT = `أنت "روبو" مساعد ذكي لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
+تتحدث بالعربية. أنت تتحدث مع معلم حلقة.
+
+يمكنك مساعدته في:
+- تقارير الحلقة (حضور، غياب، أداء الطلاب)
+- رصد درجات الطلاب وتسجيل الحضور والغياب وإضافة النجوم (استخدم الأدوات المتاحة)
+- تحليل أسبوعي وشهري لأداء الحلقة
 - تشغيل سور القرآن
-- أسئلة إسلامية ودينية  
-- تحليل أدائه (حضور/درجات/نجوم) بشكل تحفيزي
-- اختباره في القرآن عند طلبه ("اختبرني"): اسأل "أكمل الآية..." ثم قيّم إجابته
 
-حلل البيانات المرفقة وشجّعه.`;
+عند تنفيذ أمر، استخدم الاسم الكامل بالضبط من قائمة الطلاب المرفقة. الدرجات من 0 إلى 3. نجمة واحدة فقط في المرة.`;
 
-const ACTION_SCHEMA = `
-عند تنفيذ أمر، أرجع JSON بالشكل التالي:
-- رصد درجات: {"reply":"هل ترصد درجات [اسم]؟","action":"confirm_progress","params":{"studentName":"الاسم الكامل","lessonScore":0,"revisionScore":0,"tilawaScore":0,"homeworkScore":0}}
-- حضور/غياب: {"reply":"تسجيل [حالة] [اسم]؟","action":"confirm_attendance","params":{"studentName":"الاسم","status":"present/absent/excused"}}
-- نجمة: {"reply":"إضافة نجمة ل[اسم]؟","action":"confirm_stars","params":{"studentName":"الاسم","count":1}}
-- حضور جماعي: {"reply":"حضور X طالب؟","action":"confirm_bulk_attendance","params":{"status":"present","studentNames":["اسم1","اسم2"]}}
+const ADMIN_PROMPT = `أنت "روبو" مساعد ذكي لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
+تتحدث بالعربية. أنت تتحدث مع مدير الأكاديمية.
 
-قواعد: استخدم الاسم الكامل من البيانات المرفقة. الدرجات 0-3 فقط. نجمة واحدة فقط. إذا لم تجد الطالب اسأل.`;
+يمكنك مساعدته في:
+- إحصائيات عامة (عدد الطلاب، الحلقات، نسبة الحضور)
+- مقارنة أداء الحلقات
+- رصد درجات وتسجيل حضور وإضافة نجوم (استخدم الأدوات المتاحة)
+- تقارير شاملة
 
-const TEACHER_PROMPT = `${CORE}
+عند تنفيذ أمر، استخدم الاسم الكامل من البيانات. الدرجات 0-3. نجمة واحدة فقط.`;
 
-أنت تتحدث مع معلم حلقة. يمكنك:
-1. تقارير الحلقة وتحليل الأداء
-2. تنفيذ أوامر: رصد درجات، تسجيل حضور، إضافة نجوم
-3. تقرير يومي شامل
-${ACTION_SCHEMA}`;
+const PARENT_PROMPT = `أنت "روبو" مساعد ذكي لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
+تتحدث بالعربية. أنت تتحدث مع ولي أمر طالب.
 
-const ADMIN_PROMPT = `${CORE}
-
-أنت تتحدث مع مدير الأكاديمية. يمكنك:
-1. إحصائيات عامة ومقارنة حلقات
-2. تنفيذ أوامر: رصد درجات، تسجيل حضور، إضافة نجوم
-3. تقارير شاملة
-${ACTION_SCHEMA}`;
-
-const PARENT_PROMPT = `${CORE}
-
-أنت تتحدث مع ولي أمر طالب. أخبره عن:
-- حضور وغياب ابنه، درجاته، نجومه
-- نصائح لمساعدة ابنه في الحفظ
-حلل البيانات المرفقة وقدم تقريراً واضحاً.`;
+أخبره عن حالة ابنه: حضوره، درجاته، نجومه.
+قدم نصائح لمساعدة ابنه في الحفظ والمراجعة.
+يمكنك تشغيل سور القرآن له.`;
 
 // ─────────────────────────────────────────────
-// ACTION EXECUTOR
+// TOOL DEFINITIONS (Groq function calling)
 // ─────────────────────────────────────────────
+
+const TOOLS = [
+    {
+        type: 'function',
+        function: {
+            name: 'play_surah',
+            description: 'تشغيل سورة من القرآن الكريم بصوت قارئ معين. القراء المتاحون: العفاسي=7، عبدالباسط=1، الحصري=3، المنشاوي=5، الشريم=19',
+            parameters: {
+                type: 'object',
+                properties: {
+                    surah: { type: 'integer', description: 'رقم السورة (1-114). مثال: الفاتحة=1، البقرة=2، يس=36، الملك=67، الرحمن=55' },
+                    reciterId: { type: 'integer', description: 'رقم القارئ: العفاسي=7، عبدالباسط=1، الحصري=3، المنشاوي=5، الشريم=19', default: 7 },
+                },
+                required: ['surah'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'record_progress',
+            description: 'رصد درجات طالب. يستخدمه المعلم أو الأدمن لتسجيل الدرجات اليومية',
+            parameters: {
+                type: 'object',
+                properties: {
+                    studentName: { type: 'string', description: 'الاسم الكامل للطالب بالضبط كما في قائمة الطلاب' },
+                    lessonScore: { type: 'integer', description: 'درجة الدرس (0-3)', minimum: 0, maximum: 3 },
+                    revisionScore: { type: 'integer', description: 'درجة المراجعة (0-3)', minimum: 0, maximum: 3 },
+                    tilawaScore: { type: 'integer', description: 'درجة التلاوة (0-3)', minimum: 0, maximum: 3 },
+                    homeworkScore: { type: 'integer', description: 'درجة الواجب (0-3)', minimum: 0, maximum: 3 },
+                    notes: { type: 'string', description: 'ملاحظات اختيارية' },
+                },
+                required: ['studentName', 'lessonScore', 'revisionScore', 'tilawaScore', 'homeworkScore'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'record_attendance',
+            description: 'تسجيل حضور أو غياب أو إذن لطالب',
+            parameters: {
+                type: 'object',
+                properties: {
+                    studentName: { type: 'string', description: 'الاسم الكامل للطالب' },
+                    status: { type: 'string', enum: ['present', 'absent', 'excused'], description: 'الحالة: present=حاضر، absent=غائب، excused=إذن' },
+                },
+                required: ['studentName', 'status'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'add_star',
+            description: 'إضافة نجمة واحدة لطالب متميّز',
+            parameters: {
+                type: 'object',
+                properties: {
+                    studentName: { type: 'string', description: 'الاسم الكامل للطالب' },
+                },
+                required: ['studentName'],
+            },
+        },
+    },
+    {
+        type: 'function',
+        function: {
+            name: 'bulk_attendance',
+            description: 'تسجيل حضور أو غياب لمجموعة طلاب دفعة واحدة',
+            parameters: {
+                type: 'object',
+                properties: {
+                    studentNames: { type: 'array', items: { type: 'string' }, description: 'قائمة أسماء الطلاب الكاملة' },
+                    status: { type: 'string', enum: ['present', 'absent'], description: 'الحالة للجميع' },
+                },
+                required: ['studentNames', 'status'],
+            },
+        },
+    },
+];
+
+// Filter tools by role
+function getToolsForRole(role) {
+    if (role === 'student' || role === 'parent') {
+        return TOOLS.filter(t => t.function.name === 'play_surah');
+    }
+    return TOOLS; // teacher + admin get all
+}
+
+// ─────────────────────────────────────────────
+// TOOL EXECUTORS
+// ─────────────────────────────────────────────
+
+function getTodayStr() {
+    return new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+}
 
 async function findStudentByName(name, halaqaId) {
     if (!name) return null;
 
-    // Try exact match on fullName
-    let snap = await db.collection('students')
-        .where('fullName', '==', name)
-        .limit(1)
-        .get();
-
+    let snap = await db.collection('students').where('fullName', '==', name).limit(1).get();
     if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
 
-    // Try within halaqa if provided (fuzzy)
+    // Fuzzy within halaqa
     if (halaqaId) {
-        snap = await db.collection('students')
-            .where('halaqaId', '==', halaqaId)
-            .get();
-
+        snap = await db.collection('students').where('halaqaId', '==', halaqaId).get();
         for (const doc of snap.docs) {
-            const fullName = doc.data().fullName || '';
-            if (fullName.includes(name) || name.includes(fullName)) {
-                return { id: doc.id, data: doc.data() };
-            }
+            const fn = doc.data().fullName || '';
+            if (fn.includes(name) || name.includes(fn)) return { id: doc.id, data: doc.data() };
         }
     }
 
     // Global fuzzy
     snap = await db.collection('students').get();
     for (const doc of snap.docs) {
-        const fullName = doc.data().fullName || '';
-        if (fullName.includes(name) || name.includes(fullName)) {
-            return { id: doc.id, data: doc.data() };
-        }
+        const fn = doc.data().fullName || '';
+        if (fn.includes(name) || name.includes(fn)) return { id: doc.id, data: doc.data() };
     }
-
     return null;
 }
 
-function getTodayStr() {
-    return new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-}
-
-// Log action to Firestore
 async function logAction(action, params, executorId, result) {
     try {
         await db.collection('robo_action_log').add({
-            action,
-            params,
-            executorId,
+            action, params, executorId,
             success: result.success,
             message: result.message || result.error || '',
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
             date: getTodayStr(),
         });
-    } catch (e) {
-        console.error('Failed to log action:', e);
-    }
+    } catch (e) { console.error('Log error:', e); }
 }
 
-async function executeAction(action, params, halaqaId, executorId) {
+async function executeTool(toolName, args, halaqaId, executorId) {
     const today = getTodayStr();
 
-    switch (action) {
+    switch (toolName) {
+        case 'play_surah':
+            return { success: true, message: `جاري تشغيل السورة 🎧`, surah: args.surah, reciterId: args.reciterId || 7 };
+
         case 'record_progress': {
-            const student = await findStudentByName(params.studentName, halaqaId);
-            if (!student) return { success: false, error: `لم أجد طالب باسم "${params.studentName}"` };
+            const student = await findStudentByName(args.studentName, halaqaId);
+            if (!student) return { success: false, message: `لم أجد طالب باسم "${args.studentName}"` };
+
+            const scores = { lessonScore: args.lessonScore, revisionScore: args.revisionScore, tilawaScore: args.tilawaScore, homeworkScore: args.homeworkScore };
+            for (const [k, v] of Object.entries(scores)) {
+                if (v < 0 || v > 3) return { success: false, message: `الدرجة ${v} خارج النطاق (0-3)` };
+            }
 
             const docId = `${today}_${student.id}`;
-
-            // Validate scores (0-3 range)
-            const scoreFields = ['lessonScore', 'revisionScore', 'tilawaScore', 'homeworkScore'];
-            const scoreLabels = { lessonScore: 'الدرس', revisionScore: 'المراجعة', tilawaScore: 'التلاوة', homeworkScore: 'الواجب' };
-            let warnings = [];
-
-            for (const field of scoreFields) {
-                const val = Number(params[field]) || 0;
-                if (val < 0 || val > 3) {
-                    warnings.push(`${scoreLabels[field]}: ${val} (يجب أن تكون بين 0 و 3)`);
-                }
-            }
-
-            if (warnings.length > 0) {
-                return {
-                    success: false,
-                    error: `⚠️ درجات خارج النطاق:\n${warnings.join('\n')}\n\nالدرجات يجب أن تكون من 0 إلى 3.`
-                };
-            }
-
-            // Save attendance as present
             await db.collection('attendance').doc(docId).set({
-                studentId: student.id,
-                halaqaId: student.data.halaqaId || 'unknown',
-                halaqaName: student.data.halaqaName || '',
-                studentName: student.data.fullName,
-                date: today,
-                status: 'present',
-                recordedBy: executorId || 'robo_ai',
+                studentId: student.id, halaqaId: student.data.halaqaId || 'unknown',
+                halaqaName: student.data.halaqaName || '', studentName: student.data.fullName,
+                date: today, status: 'present', recordedBy: executorId || 'robo_ai',
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             }, { merge: true });
 
-            // Save progress
-            const progressData = {
-                studentId: student.id,
-                halaqaId: student.data.halaqaId || 'unknown',
-                date: today,
-                status: 'present',
-                recordedBy: executorId || 'robo_ai',
+            await db.collection('progress').doc(docId).set({
+                studentId: student.id, halaqaId: student.data.halaqaId || 'unknown',
+                date: today, status: 'present', recordedBy: executorId || 'robo_ai',
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-                lessonScore: Number(params.lessonScore) || 0,
-                revisionScore: Number(params.revisionScore) || 0,
-                tilawaScore: Number(params.tilawaScore) || 0,
-                homeworkScore: Number(params.homeworkScore) || 0,
-                hasStar: params.hasStar || false,
-            };
-            if (params.notes) progressData.notes = params.notes;
+                ...scores, hasStar: false,
+                ...(args.notes ? { notes: args.notes } : {}),
+            }, { merge: true });
 
-            await db.collection('progress').doc(docId).set(progressData, { merge: true });
-
-            const total = progressData.lessonScore + progressData.revisionScore + progressData.tilawaScore + progressData.homeworkScore;
-            const result = {
-                success: true,
-                message: `✅ تم رصد درجات ${student.data.fullName} (${total}/12)`,
-                studentName: student.data.fullName,
-            };
-            await logAction('record_progress', params, executorId, result);
+            const total = scores.lessonScore + scores.revisionScore + scores.tilawaScore + scores.homeworkScore;
+            const result = { success: true, message: `✅ تم رصد درجات ${student.data.fullName} (${total}/12)` };
+            await logAction('record_progress', args, executorId, result);
             return result;
         }
 
         case 'record_attendance': {
-            const student = await findStudentByName(params.studentName, halaqaId);
-            if (!student) return { success: false, error: `لم أجد طالب باسم "${params.studentName}"` };
+            const student = await findStudentByName(args.studentName, halaqaId);
+            if (!student) return { success: false, message: `لم أجد طالب باسم "${args.studentName}"` };
 
             const docId = `${today}_${student.id}`;
-            const status = params.status || 'present';
-
             await db.collection('attendance').doc(docId).set({
-                studentId: student.id,
-                halaqaId: student.data.halaqaId || 'unknown',
-                halaqaName: student.data.halaqaName || '',
-                studentName: student.data.fullName,
-                date: today,
-                status: status,
-                recordedBy: executorId || 'robo_ai',
+                studentId: student.id, halaqaId: student.data.halaqaId || 'unknown',
+                halaqaName: student.data.halaqaName || '', studentName: student.data.fullName,
+                date: today, status: args.status, recordedBy: executorId || 'robo_ai',
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             }, { merge: true });
 
-            const statusLabel = status === 'present' ? 'حضور ✅' : status === 'absent' ? 'غياب ❌' : 'إذن 📋';
-            const result = {
-                success: true,
-                message: `تم تسجيل ${statusLabel} لـ ${student.data.fullName}`,
-                studentName: student.data.fullName,
-            };
-            await logAction('record_attendance', params, executorId, result);
+            const label = args.status === 'present' ? 'حضور ✅' : args.status === 'absent' ? 'غياب ❌' : 'إذن 📋';
+            const result = { success: true, message: `تم تسجيل ${label} لـ ${student.data.fullName}` };
+            await logAction('record_attendance', args, executorId, result);
             return result;
         }
 
-        case 'add_stars': {
-            const student = await findStudentByName(params.studentName, halaqaId);
-            if (!student) return { success: false, error: `لم أجد طالب باسم "${params.studentName}"` };
-
-            const rawCount = Number(params.count) || 1;
-            if (rawCount < 1 || rawCount > 1) {
-                return { success: false, error: `⚠️ الحد الأقصى للنجوم هو 1 في المرة الواحدة.` };
-            }
+        case 'add_star': {
+            const student = await findStudentByName(args.studentName, halaqaId);
+            if (!student) return { success: false, message: `لم أجد طالب باسم "${args.studentName}"` };
 
             await db.collection('students').doc(student.id).update({
-                stars: admin.firestore.FieldValue.increment(rawCount),
+                stars: admin.firestore.FieldValue.increment(1),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
 
-            const result = {
-                success: true,
-                message: `⭐ تم إضافة نجمة لـ ${student.data.fullName}`,
-                studentName: student.data.fullName,
-            };
-            await logAction('add_stars', params, executorId, result);
+            const result = { success: true, message: `⭐ تم إضافة نجمة لـ ${student.data.fullName}` };
+            await logAction('add_star', args, executorId, result);
             return result;
         }
 
         case 'bulk_attendance': {
-            const names = params.studentNames || [];
-            const status = params.status || 'present';
-            let successCount = 0;
-            let failedNames = [];
+            const names = args.studentNames || [];
+            const status = args.status || 'present';
+            let ok = 0, failed = [];
 
             for (const name of names) {
                 const student = await findStudentByName(name, halaqaId);
-                if (!student) {
-                    failedNames.push(name);
-                    continue;
-                }
-
+                if (!student) { failed.push(name); continue; }
                 const docId = `${today}_${student.id}`;
                 await db.collection('attendance').doc(docId).set({
-                    studentId: student.id,
-                    halaqaId: student.data.halaqaId || 'unknown',
-                    halaqaName: student.data.halaqaName || '',
-                    studentName: student.data.fullName,
-                    date: today,
-                    status: status,
-                    recordedBy: executorId || 'robo_ai',
+                    studentId: student.id, halaqaId: student.data.halaqaId || 'unknown',
+                    halaqaName: student.data.halaqaName || '', studentName: student.data.fullName,
+                    date: today, status, recordedBy: executorId || 'robo_ai',
                     updatedAt: admin.firestore.FieldValue.serverTimestamp(),
                 }, { merge: true });
-                successCount++;
+                ok++;
             }
 
-            let msg = `✅ تم تسجيل ${status === 'present' ? 'حضور' : 'غياب'} ${successCount} طالب`;
-            if (failedNames.length > 0) {
-                msg += `\n⚠️ لم أجد: ${failedNames.join('، ')}`;
-            }
+            let msg = `✅ تم تسجيل ${status === 'present' ? 'حضور' : 'غياب'} ${ok} طالب`;
+            if (failed.length > 0) msg += ` | لم أجد: ${failed.join('، ')}`;
             const result = { success: true, message: msg };
-            await logAction('bulk_attendance', params, executorId, result);
+            await logAction('bulk_attendance', args, executorId, result);
             return result;
         }
 
         default:
-            return { success: false, error: `أكشن غير معروف: ${action}` };
+            return { success: false, message: `أداة غير معروفة: ${toolName}` };
     }
 }
 
 // ─────────────────────────────────────────────
-// DATA FETCHERS
+// DATA FETCHERS (context as separate message)
 // ─────────────────────────────────────────────
 
 function getMonthRange() {
     const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const start = `${year}-${month}-01`;
-    const endDate = new Date(year, now.getMonth() + 1, 0);
-    const end = `${year}-${month}-${String(endDate.getDate()).padStart(2, '0')}`;
-    return { start, end, label: `${month}/${year}` };
+    const y = now.getFullYear(), m = String(now.getMonth() + 1).padStart(2, '0');
+    const start = `${y}-${m}-01`;
+    const endDate = new Date(y, now.getMonth() + 1, 0);
+    const end = `${y}-${m}-${String(endDate.getDate()).padStart(2, '0')}`;
+    return { start, end, label: `${m}/${y}` };
 }
 
 async function fetchStudentContext(studentId) {
     if (!studentId) return '';
-
     const today = getTodayStr();
     const { start, end, label } = getMonthRange();
 
     try {
         const [studentDoc, attSnap, progSnap] = await Promise.all([
             db.collection('students').doc(studentId).get(),
-            db.collection('attendance')
-                .where('studentId', '==', studentId)
-                .where('date', '>=', start)
-                .where('date', '<=', end)
-                .get(),
-            db.collection('progress')
-                .where('studentId', '==', studentId)
-                .where('date', '>=', start)
-                .where('date', '<=', end)
-                .get(),
+            db.collection('attendance').where('studentId', '==', studentId).where('date', '>=', start).where('date', '<=', end).get(),
+            db.collection('progress').where('studentId', '==', studentId).where('date', '>=', start).where('date', '<=', end).get(),
         ]);
 
         let ctx = '\n--- بيانات الطالب ---';
-
         if (studentDoc.exists) {
             const s = studentDoc.data();
-            ctx += `\nالاسم: ${s.fullName || 'غير معروف'}`;
-            ctx += `\nالحلقة: ${s.halaqaName || 'غير محدد'}`;
-            ctx += `\nالنوع: ${s.type === 'reserve' ? 'احتياط' : 'أساسي'}`;
-            ctx += `\nالنجوم: ${s.stars || 0} ⭐`;
-            if (s.currentLevel) ctx += `\nمستوى القاعدة: ${s.currentLevel}`;
+            ctx += `\nالاسم: ${s.fullName || '?'} | الحلقة: ${s.halaqaName || '?'} | النجوم: ${s.stars || 0} ⭐`;
+            if (s.currentLevel) ctx += ` | مستوى القاعدة: ${s.currentLevel}`;
         }
 
         let present = 0, absent = 0, excused = 0;
-        let todayStatus = 'لم يُسجّل بعد';
         attSnap.forEach(doc => {
             const d = doc.data();
             if (d.status === 'present' || d.status === 'sard') present++;
             else if (d.status === 'absent') absent++;
             else if (d.status === 'excused') excused++;
-            if (d.date === today) todayStatus = d.status === 'present' ? 'حاضر ✅' : d.status === 'absent' ? 'غائب ❌' : 'إذن 📋';
         });
-        ctx += `\n\nحضور شهر ${label}: حضور=${present}، غياب=${absent}، أعذار=${excused}`;
-        ctx += `\nحالة اليوم: ${todayStatus}`;
+        ctx += `\nحضور شهر ${label}: حضور=${present} غياب=${absent} أعذار=${excused}`;
 
         const progDocs = [];
         progSnap.forEach(doc => progDocs.push(doc.data()));
         progDocs.sort((a, b) => b.date.localeCompare(a.date));
 
         if (progDocs.length > 0) {
-            ctx += `\n\nآخر الدرجات:`;
+            ctx += '\nآخر الدرجات:';
             for (const p of progDocs.slice(0, 5)) {
-                const total = (Number(p.lessonScore || 0) + Number(p.revisionScore || 0) +
-                    Number(p.tilawaScore || 0) + Number(p.homeworkScore || 0));
-                ctx += `\n- ${p.date}: مجموع=${total}/12 (درس=${p.lessonScore || 0}، مراجعة=${p.revisionScore || 0}، تلاوة=${p.tilawaScore || 0}، واجب=${p.homeworkScore || 0})${p.hasStar ? ' ⭐' : ''}`;
+                ctx += `\n${p.date}: درس=${p.lessonScore || 0} مراجعة=${p.revisionScore || 0} تلاوة=${p.tilawaScore || 0} واجب=${p.homeworkScore || 0}${p.hasStar ? ' ⭐' : ''}`;
             }
         }
-
         return ctx;
     } catch (e) {
         console.error('Student context error:', e);
-        return '\n(فشل جلب بيانات الطالب)';
+        return '';
     }
 }
 
 async function fetchTeacherContext(teacherId) {
     if (!teacherId) return { context: '', halaqaId: null };
-
     const today = getTodayStr();
     const { start, end, label } = getMonthRange();
 
     try {
         const teacherDoc = await db.collection('users').doc(teacherId).get();
-        if (!teacherDoc.exists) return { context: '\n(المعلم غير موجود)', halaqaId: null };
+        if (!teacherDoc.exists) return { context: '', halaqaId: null };
 
         const teacher = teacherDoc.data();
         const halaqaId = teacher.halaqaId;
-        if (!halaqaId) return { context: '\n(المعلم غير مربوط بحلقة)', halaqaId: null };
+        if (!halaqaId) return { context: '(المعلم غير مربوط بحلقة)', halaqaId: null };
 
-        const [studentsSnap, todayAttSnap, monthAttSnap, monthProgSnap] = await Promise.all([
+        const [studentsSnap, todayAttSnap, monthAttSnap] = await Promise.all([
             db.collection('students').where('halaqaId', '==', halaqaId).get(),
             db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '==', today).get(),
             db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
-            db.collection('progress').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
         ]);
 
-        let ctx = '\n--- بيانات الحلقة ---';
-        ctx += `\nاسم المعلم: ${teacher.name || teacher.displayName || 'غير معروف'}`;
-        ctx += `\nالحلقة: ${teacher.halaqaName || halaqaId}`;
-        ctx += `\nعدد الطلاب: ${studentsSnap.size}`;
+        let ctx = `\n--- بيانات الحلقة ---`;
+        ctx += `\nالمعلم: ${teacher.name || teacher.displayName || '?'} | الحلقة: ${teacher.halaqaName || halaqaId} | عدد الطلاب: ${studentsSnap.size}`;
 
-        // List ALL students with names
-        ctx += `\n\nقائمة الطلاب:`;
-        const studentsList = [];
+        const studentNames = [];
+        studentsSnap.forEach(doc => studentNames.push(doc.data().fullName || '?'));
+        ctx += `\nالطلاب: ${studentNames.join('، ')}`;
+
+        const todayMap = {};
+        todayAttSnap.forEach(doc => { todayMap[doc.data().studentId] = doc.data().status; });
+
+        const absentToday = [], presentToday = [], notRecorded = [];
         studentsSnap.forEach(doc => {
             const s = doc.data();
-            studentsList.push(s.fullName || 'بدون اسم');
-        });
-        ctx += '\n' + studentsList.join('، ');
-
-        // Today's attendance
-        const todayStatuses = {};
-        todayAttSnap.forEach(doc => {
-            const d = doc.data();
-            todayStatuses[d.studentId] = d.status;
-        });
-
-        const absentToday = [];
-        const presentToday = [];
-        const notRecorded = [];
-        studentsSnap.forEach(doc => {
-            const s = doc.data();
-            const status = todayStatuses[doc.id];
-            if (status === 'absent') absentToday.push(s.fullName);
-            else if (status === 'present' || status === 'sard') presentToday.push(s.fullName);
+            const st = todayMap[doc.id];
+            if (st === 'absent') absentToday.push(s.fullName);
+            else if (st === 'present' || st === 'sard') presentToday.push(s.fullName);
             else notRecorded.push(s.fullName);
         });
 
-        ctx += `\n\nحضور اليوم (${today}): ${presentToday.length} حاضر، ${absentToday.length} غائب، ${notRecorded.length} لم يُسجّل`;
+        ctx += `\n\nاليوم (${today}): ${presentToday.length} حاضر، ${absentToday.length} غائب، ${notRecorded.length} لم يُسجّل`;
         if (absentToday.length > 0) ctx += `\nالغائبون: ${absentToday.join('، ')}`;
-        if (notRecorded.length > 0) ctx += `\nلم يُرصد بعد: ${notRecorded.join('، ')}`;
+        if (notRecorded.length > 0) ctx += `\nلم يُرصد: ${notRecorded.join('، ')}`;
 
-        // Monthly stats per student
-        const monthlyStats = {};
+        // Most absent this month
+        const absMap = {};
         monthAttSnap.forEach(doc => {
             const d = doc.data();
-            if (!monthlyStats[d.studentId]) monthlyStats[d.studentId] = { present: 0, absent: 0, excused: 0, name: '' };
-            if (d.status === 'present' || d.status === 'sard') monthlyStats[d.studentId].present++;
-            else if (d.status === 'absent') monthlyStats[d.studentId].absent++;
-            else if (d.status === 'excused') monthlyStats[d.studentId].excused++;
+            if (d.status === 'absent') absMap[d.studentId] = (absMap[d.studentId] || 0) + 1;
         });
-
-        // Fill names
-        studentsSnap.forEach(doc => {
-            if (monthlyStats[doc.id]) monthlyStats[doc.id].name = doc.data().fullName || '';
-        });
-
-        const sorted = Object.entries(monthlyStats).sort((a, b) => b[1].absent - a[1].absent);
-        const mostAbsent = sorted.filter(([, s]) => s.absent >= 2).slice(0, 5);
-        const bestStudents = sorted.filter(([, s]) => s.present >= 5 && s.absent === 0).slice(0, 5);
-
-        if (mostAbsent.length > 0) {
-            ctx += `\n\nأكثر الطلاب غياباً هذا الشهر:`;
-            mostAbsent.forEach(([, s]) => ctx += `\n- ${s.name}: ${s.absent} أيام غياب`);
-        }
-        if (bestStudents.length > 0) {
-            ctx += `\nالطلاب المتميزون (بدون غياب):`;
-            bestStudents.forEach(([, s]) => ctx += `\n- ${s.name}: ${s.present} أيام حضور`);
-        }
-
-        // Monthly progress averages
-        const progByStudent = {};
-        monthProgSnap.forEach(doc => {
-            const d = doc.data();
-            if (!progByStudent[d.studentId]) progByStudent[d.studentId] = { count: 0, total: 0 };
-            const total = (Number(d.lessonScore || 0) + Number(d.revisionScore || 0) + Number(d.tilawaScore || 0) + Number(d.homeworkScore || 0));
-            progByStudent[d.studentId].total += total;
-            progByStudent[d.studentId].count++;
-        });
-
-        if (Object.keys(progByStudent).length > 0) {
-            ctx += `\n\nمتوسط الدرجات الشهرية:`;
-            let totalAvg = 0;
-            let count = 0;
-            for (const [sid, stats] of Object.entries(progByStudent)) {
-                const avg = (stats.total / stats.count).toFixed(1);
-                totalAvg += Number(avg);
-                count++;
+        const topAbsent = Object.entries(absMap).sort((a, b) => b[1] - a[1]).slice(0, 5);
+        if (topAbsent.length > 0) {
+            ctx += `\n\nأكثر غياباً هذا الشهر:`;
+            for (const [sid, cnt] of topAbsent) {
+                const s = studentsSnap.docs.find(d => d.id === sid);
+                ctx += `\n${s ? s.data().fullName : sid}: ${cnt} أيام`;
             }
-            ctx += `\nمتوسط الحلقة: ${(totalAvg / count).toFixed(1)}/12`;
         }
 
         return { context: ctx, halaqaId };
     } catch (e) {
         console.error('Teacher context error:', e);
-        return { context: '\n(فشل جلب بيانات المعلم)', halaqaId: null };
+        return { context: '', halaqaId: null };
     }
 }
 
 async function fetchAdminContext() {
     const today = getTodayStr();
-
     try {
-        const [studentsSnap, halaqatSnap, todayAttSnap, demotionSnap] = await Promise.all([
+        const [studentsSnap, halaqatSnap, todayAttSnap] = await Promise.all([
             db.collection('students').get(),
             db.collection('halaqat').get(),
             db.collection('attendance').where('date', '==', today).get(),
-            db.collection('demotion_alerts').orderBy('createdAt', 'desc').limit(10).get(),
         ]);
 
-        let ctx = '\n--- إحصائيات الأكاديمية ---';
-
-        let mainCount = 0, reserveCount = 0;
-        const allStudentNames = [];
+        let ctx = `\n--- إحصائيات الأكاديمية ---`;
+        let main = 0, reserve = 0;
+        const allNames = [];
         studentsSnap.forEach(doc => {
             const d = doc.data();
-            if (d.type === 'reserve') reserveCount++;
-            else mainCount++;
-            allStudentNames.push(d.fullName || 'بدون اسم');
+            if (d.type === 'reserve') reserve++; else main++;
+            allNames.push(d.fullName || '?');
         });
-        ctx += `\nإجمالي الطلاب: ${studentsSnap.size} (أساسي: ${mainCount}، احتياط: ${reserveCount})`;
-        ctx += `\nعدد الحلقات: ${halaqatSnap.size}`;
-        ctx += `\n\nقائمة الطلاب: ${allStudentNames.join('، ')}`;
+        ctx += `\nطلاب: ${studentsSnap.size} (أساسي: ${main}, احتياط: ${reserve}) | حلقات: ${halaqatSnap.size}`;
+        ctx += `\nأسماء الطلاب: ${allNames.join('، ')}`;
 
-        let todayPresent = 0, todayAbsent = 0, todayExcused = 0;
-        const halaqaAbsent = {};
+        let p = 0, a = 0, e = 0;
+        const hAbsent = {};
         todayAttSnap.forEach(doc => {
             const d = doc.data();
-            if (d.status === 'present' || d.status === 'sard') todayPresent++;
-            else if (d.status === 'absent') {
-                todayAbsent++;
-                const h = d.halaqaName || 'غير محدد';
-                halaqaAbsent[h] = (halaqaAbsent[h] || 0) + 1;
-            }
-            else if (d.status === 'excused') todayExcused++;
+            if (d.status === 'present' || d.status === 'sard') p++;
+            else if (d.status === 'absent') { a++; const h = d.halaqaName || '?'; hAbsent[h] = (hAbsent[h] || 0) + 1; }
+            else if (d.status === 'excused') e++;
         });
+        const total = p + a + e;
+        ctx += `\n\nحضور اليوم: ${p} حاضر، ${a} غائب، ${e} إذن (نسبة: ${total > 0 ? Math.round(p / total * 100) : 0}%)`;
 
-        const totalRecorded = todayPresent + todayAbsent + todayExcused;
-        const attendanceRate = totalRecorded > 0 ? Math.round((todayPresent / totalRecorded) * 100) : 0;
-        ctx += `\n\nحضور اليوم (${today}): ${todayPresent} حاضر، ${todayAbsent} غائب، ${todayExcused} إذن`;
-        ctx += `\nنسبة الحضور: ${attendanceRate}%`;
-
-        if (Object.keys(halaqaAbsent).length > 0) {
-            ctx += `\n\nالغياب حسب الحلقة:`;
-            Object.entries(halaqaAbsent)
-                .sort((a, b) => b[1] - a[1])
-                .forEach(([name, count]) => ctx += `\n- ${name}: ${count} غائب`);
-        }
-
-        if (!demotionSnap.empty) {
-            ctx += `\n\nآخر حالات النقل:`;
-            demotionSnap.forEach(doc => {
-                const d = doc.data();
-                ctx += `\n- ${d.studentName || 'غير معروف'}: ${d.reason || 'بدون سبب'}`;
-            });
+        if (Object.keys(hAbsent).length > 0) {
+            ctx += `\nغياب حسب الحلقة:`;
+            for (const [h, c] of Object.entries(hAbsent).sort((a, b) => b[1] - a[1])) ctx += ` ${h}:${c}`;
         }
 
         return ctx;
-    } catch (e) {
-        console.error('Admin context error:', e);
-        return '\n(فشل جلب إحصائيات الأكاديمية)';
+    } catch (err) {
+        console.error('Admin context error:', err);
+        return '';
     }
-}
-
-async function fetchParentContext(studentId) {
-    // Parents see the same data as students
-    return await fetchStudentContext(studentId);
 }
 
 // ─────────────────────────────────────────────
@@ -568,172 +475,137 @@ export default async function handler(req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'POST,OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-    if (!GROQ_API_KEY) {
-        return res.status(500).json({ error: 'GROQ_API_KEY not set.' });
-    }
+    if (!GROQ_API_KEY) return res.status(500).json({ error: 'GROQ_API_KEY not set.' });
 
     const { message, role, studentId, teacherId, history, confirmAction } = req.body;
 
-    if (!message && !confirmAction) {
-        return res.status(400).json({ error: 'Message is required' });
-    }
-
-    try {
-        // ── Handle confirmation of pending action ──
-        if (confirmAction) {
-            const { action, params } = confirmAction;
-            // Map confirm_ actions to actual actions
-            const actualAction = action.replace('confirm_', '');
-            const halaqaId = null; // Will use fuzzy search
-
-            // Fetch halaqaId for teacher
-            let execHalaqaId = null;
+    // ── Handle confirmation of pending tool call ──
+    if (confirmAction) {
+        try {
+            let halaqaId = null;
             if (teacherId) {
-                const teacherDoc = await db.collection('users').doc(teacherId).get();
-                if (teacherDoc.exists) execHalaqaId = teacherDoc.data().halaqaId;
+                const td = await db.collection('users').doc(teacherId).get();
+                if (td.exists) halaqaId = td.data().halaqaId;
             }
-
-            const result = await executeAction(actualAction, params, execHalaqaId, teacherId || 'robo_ai');
+            const result = await executeTool(confirmAction.toolName, confirmAction.args, halaqaId, teacherId || 'robo_ai');
             return res.status(200).json({
                 success: true,
-                reply: result.success ? result.message : `⚠️ ${result.error}`,
-                action: actualAction,
+                reply: result.message,
                 actionResult: result,
+                surah: result.surah || null,
+                reciterId: result.reciterId || null,
             });
+        } catch (e) {
+            return res.status(500).json({ success: false, reply: `خطأ: ${e.message}` });
         }
+    }
 
-        let systemPrompt;
-        let context = '';
-        let halaqaId = null;
+    if (!message) return res.status(400).json({ error: 'Message is required' });
+
+    try {
+        let systemPrompt, context = '', halaqaId = null;
 
         switch (role) {
             case 'teacher': {
                 systemPrompt = TEACHER_PROMPT;
-                const result = await fetchTeacherContext(teacherId || studentId);
-                context = result.context;
-                halaqaId = result.halaqaId;
+                const r = await fetchTeacherContext(teacherId || studentId);
+                context = r.context; halaqaId = r.halaqaId;
                 break;
             }
-            case 'admin': {
+            case 'admin':
                 systemPrompt = ADMIN_PROMPT;
                 context = await fetchAdminContext();
                 break;
-            }
-            case 'parent': {
+            case 'parent':
                 systemPrompt = PARENT_PROMPT;
-                context = await fetchParentContext(studentId);
+                context = await fetchStudentContext(studentId);
                 break;
-            }
-            case 'student':
-            default: {
+            default:
                 systemPrompt = STUDENT_PROMPT;
                 context = await fetchStudentContext(studentId);
                 break;
-            }
         }
 
-        // Build messages for Groq
+        // Build messages — context goes in a separate system message
         const messages = [
-            { role: 'system', content: systemPrompt }
+            { role: 'system', content: systemPrompt },
         ];
+
+        if (context) {
+            messages.push({ role: 'system', content: `بيانات حقيقية من قاعدة البيانات:\n${context}` });
+        }
 
         if (history && Array.isArray(history)) {
             for (const h of history.slice(-8)) {
-                messages.push({
-                    role: h.role === 'user' ? 'user' : 'assistant',
-                    content: h.text
-                });
+                messages.push({ role: h.role === 'user' ? 'user' : 'assistant', content: h.text });
             }
         }
 
-        messages.push({
-            role: 'user',
-            content: message + context
-        });
+        messages.push({ role: 'user', content: message });
 
-        // Call Groq API
+        // Call Groq with TOOLS (no response_format json!)
+        const tools = getToolsForRole(role);
         const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${GROQ_API_KEY}`,
-            },
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GROQ_API_KEY}` },
             body: JSON.stringify({
                 model: 'llama-3.3-70b-versatile',
                 messages,
+                tools,
+                tool_choice: 'auto',
                 temperature: 0.7,
                 max_tokens: 1024,
-                response_format: { type: 'json_object' },
-            })
+            }),
         });
 
         const groqData = await groqRes.json();
-
         if (!groqRes.ok) {
             console.error('Groq error:', JSON.stringify(groqData));
             return res.status(500).json({ error: 'Groq API error', details: groqData.error?.message });
         }
 
-        const rawText = groqData.choices?.[0]?.message?.content || '{}';
+        const choice = groqData.choices?.[0];
+        const responseMsg = choice?.message;
 
-        let parsed;
-        try {
-            parsed = JSON.parse(rawText);
-        } catch {
-            parsed = { reply: rawText };
-        }
+        // ── MODEL WANTS TO CALL A TOOL ──
+        if (responseMsg?.tool_calls && responseMsg.tool_calls.length > 0) {
+            const toolCall = responseMsg.tool_calls[0];
+            const toolName = toolCall.function.name;
+            let toolArgs;
+            try { toolArgs = JSON.parse(toolCall.function.arguments); } catch { toolArgs = {}; }
 
-        // ── Confirmation flow: return pending action to client ──
-        const confirmableActions = ['confirm_progress', 'confirm_attendance', 'confirm_stars', 'confirm_bulk_attendance'];
+            // play_surah: execute immediately (no confirmation needed)
+            if (toolName === 'play_surah') {
+                return res.status(200).json({
+                    success: true,
+                    reply: `جاري تشغيل السورة 🎧`,
+                    action: 'play_surah',
+                    surah: toolArgs.surah,
+                    reciterId: toolArgs.reciterId || 7,
+                });
+            }
 
-        if (parsed.action && confirmableActions.includes(parsed.action) && (role === 'teacher' || role === 'admin')) {
+            // Other actions: send to Flutter for confirmation
+            const actionLabels = {
+                record_progress: `رصد درجات ${toolArgs.studentName}: درس=${toolArgs.lessonScore} مراجعة=${toolArgs.revisionScore} تلاوة=${toolArgs.tilawaScore} واجب=${toolArgs.homeworkScore}`,
+                record_attendance: `تسجيل ${toolArgs.status === 'present' ? 'حضور' : toolArgs.status === 'absent' ? 'غياب' : 'إذن'} لـ ${toolArgs.studentName}`,
+                add_star: `إضافة نجمة لـ ${toolArgs.studentName}`,
+                bulk_attendance: `تسجيل ${toolArgs.status === 'present' ? 'حضور' : 'غياب'} ${toolArgs.studentNames?.length || 0} طالب`,
+            };
+
             return res.status(200).json({
                 success: true,
-                reply: parsed.reply || 'هل تريد تنفيذ هذا الأمر؟',
-                action: parsed.action,
-                pendingAction: {
-                    action: parsed.action,
-                    params: parsed.params || {},
-                },
+                reply: `${actionLabels[toolName] || toolName}\n\nهل تريد التنفيذ؟`,
+                pendingAction: { toolName, args: toolArgs },
             });
         }
 
-        // ── Direct actions (non-confirmable like play_surah, daily_report) ──
-        let actionResult = null;
-        const directActions = ['record_progress', 'record_attendance', 'add_stars', 'bulk_attendance'];
-
-        if (parsed.action && directActions.includes(parsed.action) && (role === 'teacher' || role === 'admin')) {
-            try {
-                actionResult = await executeAction(
-                    parsed.action,
-                    parsed.params || {},
-                    halaqaId,
-                    teacherId || studentId || 'robo_ai'
-                );
-
-                if (actionResult.success) {
-                    parsed.reply = actionResult.message;
-                } else {
-                    parsed.reply = `⚠️ ${actionResult.error}`;
-                }
-            } catch (e) {
-                console.error('Action execution error:', e);
-                parsed.reply = `⚠️ حدث خطأ أثناء تنفيذ الأمر: ${e.message}`;
-                actionResult = { success: false, error: e.message };
-            }
-        }
-
+        // ── NORMAL TEXT RESPONSE ──
         return res.status(200).json({
             success: true,
-            reply: parsed.reply || 'عذراً، لم أفهم طلبك.',
-            action: parsed.action || null,
-            actionResult: actionResult,
-            surah: parsed.surah || null,
-            reciterId: parsed.reciterId || null,
+            reply: responseMsg?.content || 'عذراً، لم أفهم طلبك.',
         });
 
     } catch (error) {
