@@ -1,5 +1,6 @@
 // api/ai-chat.js
-// Groq AI proxy for "روبو" — Multi-role assistant with ACTION EXECUTION
+// Groq AI proxy for "روبو" — Full-featured multi-role assistant
+// Features: Quiz, Reports, Actions, Confirmation, Logging, Parent, TTS
 // Model: Llama 3.3 70B | Free tier: 30 RPM, 14,400/day
 
 import admin from "firebase-admin";
@@ -40,14 +41,22 @@ const STUDENT_PROMPT = `${BASE_PROMPT}
 1. تشغيل سور القرآن بصوت أي قارئ
 2. الإجابة عن أسئلة إسلامية ودينية
 3. تحليل بيانات الطالب (حضور، درجات، نجوم) وتقديم نصائح تحفيزية
-4. شرح كيفية استخدام التطبيق
+4. **اختبار الطالب في القرآن** عند الطلب
 5. التحفيز والتشجيع بناءً على مستوى الأداء
 
-عندما يسأل عن أدائه أو درجاته أو حضوره، حلل البيانات المرفقة وأعطه ملخصاً تحفيزياً.
+### وضع الاختبار:
+عندما يقول "اختبرني" أو "امتحني" في سورة معينة:
+- اسأله أسئلة مثل: "أكمل الآية: ..." أو "ما الآية التي تأتي بعد ...؟"
+- نوّع بين أسئلة الإكمال والتذكر
+- ابدأ بالسهل ثم تدريجياً صعّب
+- بعد كل إجابة قيّمها وأعطه الآية الصحيحة إن أخطأ
+- بعد 5 أسئلة أعطه تقييم نهائي (ممتاز/جيد جداً/جيد/يحتاج مراجعة)
 
-الأكشنات المتاحة:
+### الأكشنات:
 - تشغيل سورة: {"reply": "جاري تشغيل سورة X 🎧", "action": "play_surah", "surah": رقم, "reciterId": رقم}
-- ردود عادية: {"reply": "نص الرد"}`;
+- ردود عادية: {"reply": "نص الرد"}
+
+عندما يسأل عن أدائه، حلل البيانات المرفقة وأعطه ملخصاً تحفيزياً.`;
 
 const TEACHER_PROMPT = `${BASE_PROMPT}
 
@@ -56,79 +65,93 @@ const TEACHER_PROMPT = `${BASE_PROMPT}
 مهامك:
 1. تقارير الحلقة (حضور، غياب، أداء)
 2. **تنفيذ أوامر المعلم** مثل رصد درجات، تسجيل حضور/غياب، إضافة نجوم
-3. تشغيل سور القرآن
+3. **تقرير يومي شامل** عند الطلب
+4. تحليل أسبوعي/شهري للحلقة
+5. تشغيل سور القرآن
 
-### الأكشنات المتاحة (أرجع هذا JSON عند طلب تنفيذ أمر):
+### الأكشنات المتاحة:
 
-1. **رصد درجات طالب:**
-{"reply": "تم رصد درجات [اسم] ✅", "action": "record_progress", "params": {"studentName": "اسم الطالب كما هو في البيانات", "lessonScore": 0-10, "revisionScore": 0-10, "tilawaScore": 0-10, "homeworkScore": 0-10, "notes": "ملاحظات اختيارية"}}
+1. **رصد درجات طالب (يحتاج تأكيد):**
+{"reply": "هل تريد رصد درجات [اسم]: درس=X، مراجعة=X، تلاوة=X، واجب=X؟", "action": "confirm_progress", "params": {"studentName": "الاسم الكامل", "lessonScore": 0-3, "revisionScore": 0-3, "tilawaScore": 0-3, "homeworkScore": 0-3, "notes": "اختياري"}}
 
-2. **تسجيل حضور/غياب طالب:**
-{"reply": "تم تسجيل حضور [اسم] ✅", "action": "record_attendance", "params": {"studentName": "اسم الطالب", "status": "present أو absent أو excused"}}
+2. **تسجيل حضور/غياب (يحتاج تأكيد):**
+{"reply": "هل تريد تسجيل حضور/غياب [اسم]؟", "action": "confirm_attendance", "params": {"studentName": "الاسم", "status": "present أو absent أو excused"}}
 
-3. **إضافة نجوم لطالب:**
-{"reply": "تم إضافة X نجوم ل[اسم] ⭐", "action": "add_stars", "params": {"studentName": "اسم الطالب", "count": عدد}}
+3. **إضافة نجمة (يحتاج تأكيد):**
+{"reply": "هل تريد إضافة نجمة ل[اسم]؟", "action": "confirm_stars", "params": {"studentName": "الاسم", "count": 1}}
 
-4. **تسجيل حضور مجموعة طلاب:**
-{"reply": "تم تسجيل حضور X طالب ✅", "action": "bulk_attendance", "params": {"status": "present أو absent", "studentNames": ["اسم1", "اسم2"]}}
+4. **حضور جماعي (يحتاج تأكيد):**
+{"reply": "تسجيل حضور X طالب؟", "action": "confirm_bulk_attendance", "params": {"status": "present", "studentNames": ["اسم1", "اسم2"]}}
 
-5. **تشغيل سورة:**
+5. **تقرير يومي:**
+{"reply": "📋 تقرير حلقة [اسم] - [التاريخ]\\n...(تفاصيل)...", "action": "daily_report"}
+
+6. **تشغيل سورة:**
 {"reply": "جاري تشغيل سورة X 🎧", "action": "play_surah", "surah": رقم, "reciterId": رقم}
 
-6. **ردود عادية (بدون تنفيذ):**
+7. **ردود عادية:**
 {"reply": "نص الرد"}
 
 ### قواعد مهمة:
-- عند رصد الدرجات، استخدم **الاسم الكامل بالضبط** كما هو في بيانات الطلاب المرفقة.
-- إذا لم تجد الطالب في البيانات، اسأل المعلم عن الاسم الصحيح. لا تخمن.
-- الدرجات من 0 إلى 10 لكل مادة. إذا أعطاك المعلم رقم أكبر من 3 أو سالب، نبّهه واسأله "هل تقصد X؟" ولا تنفذ الأمر.
-- إذا لم يحدد المعلم درجة مادة معينة، اتركها 0.
-- عند تسجيل الحضور بدون تحديد الحالة، افترض "present".
-- النجوم: الحد الأقصى 1 نجوم في المرة الواحدة. إذا طلب أكثر نبّهه.
-- تأكد من مطابقة الاسم بالضبط مع قائمة الطلاب.`;
+- استخدم **الاسم الكامل بالضبط** كما في بيانات الطلاب المرفقة.
+- إذا لم تجد الطالب، اسأل المعلم عن الاسم الصحيح.
+- الدرجات من 0 إلى 3 لكل مادة. إذا أعطاك المعلم رقم أكبر من 3 أو سالب، نبّهه ولا تنفذ.
+- النجوم: الحد الأقصى 1 في المرة الواحدة.
+- عند التقرير اليومي، اذكر: عدد الحضور، الغائبين بأسمائهم، متوسط الدرجات، ملاحظات.
+- عند التحليل الشهري، قارن الأداء بين الأسابيع واذكر الاتجاه (تحسن/تراجع).`;
 
 const ADMIN_PROMPT = `${BASE_PROMPT}
 
 أنت تتحدث مع **مدير الأكاديمية**. لديك كل صلاحيات المعلم بالإضافة لصلاحيات إدارية.
 
 مهامك:
-1. تقديم إحصائيات عامة (عدد الطلاب، الحلقات، نسبة الحضور)
+1. إحصائيات عامة (عدد الطلاب، الحلقات، نسبة الحضور)
 2. مقارنة أداء الحلقات
 3. **تنفيذ أوامر** مثل رصد درجات، تسجيل حضور/غياب، إضافة نجوم
-4. تشغيل سور القرآن
+4. تقارير شاملة يومية/أسبوعية/شهرية
+5. تشغيل سور القرآن
 
-### الأكشنات المتاحة (نفس أكشنات المعلم بالضبط):
+### الأكشنات (نفس المعلم):
+1. {"action": "confirm_progress", "params": {...}}
+2. {"action": "confirm_attendance", "params": {...}}
+3. {"action": "confirm_stars", "params": {...}}
+4. {"action": "confirm_bulk_attendance", "params": {...}}
+5. {"action": "daily_report"}
+6. {"action": "play_surah", "surah": رقم, "reciterId": رقم}
+7. {"reply": "نص الرد"}
 
-1. **رصد درجات طالب:**
-{"reply": "تم رصد درجات [اسم] ✅", "action": "record_progress", "params": {"studentName": "اسم الطالب", "lessonScore": 0-10, "revisionScore": 0-10, "tilawaScore": 0-10, "homeworkScore": 0-10, "notes": "ملاحظات اختيارية"}}
+### قواعد:
+- الاسم الكامل بالضبط كما في البيانات.
+- الدرجات 0-3. إذا أعطاك أكبر من 3 أو سالب، نبّهه ولا تنفذ.
+- النجوم: حد أقصى 1 في المرة.`;
 
-2. **تسجيل حضور/غياب:**
-{"reply": "تم تسجيل حضور [اسم] ✅", "action": "record_attendance", "params": {"studentName": "اسم الطالب", "status": "present أو absent أو excused"}}
+const PARENT_PROMPT = `${BASE_PROMPT}
 
-3. **إضافة نجوم:**
-{"reply": "تم إضافة X نجوم ⭐", "action": "add_stars", "params": {"studentName": "اسم الطالب", "count": عدد}}
+أنت تتحدث مع **ولي أمر** طالب. مهامك:
+1. إطلاع ولي الأمر على حالة ابنه/ابنته (حضور، درجات، نجوم)
+2. تقديم ملخص يومي عن أداء الطالب
+3. نصائح لولي الأمر لمساعدة ابنه في الحفظ والمراجعة
+4. الإجابة عن استفسارات ولي الأمر
+5. تشغيل سور القرآن
 
-4. **حضور جماعي:**
-{"reply": "تم تسجيل حضور X طالب ✅", "action": "bulk_attendance", "params": {"status": "present", "studentNames": ["اسم1", "اسم2"]}}
+عندما يسأل "كيف ابني اليوم" أو "كيف بنتي"، أعطه تقريراً مفصلاً يشمل:
+- حالة الحضور اليوم
+- آخر الدرجات المسجلة
+- عدد النجوم
+- نصيحة تحفيزية
 
-5. **تشغيل سورة:**
-{"reply": "جاري تشغيل سورة X 🎧", "action": "play_surah", "surah": رقم, "reciterId": رقم}
-
-6. **ردود عادية:**
-{"reply": "نص الرد"}
-
-### قواعد مهمة:
-- استخدم الاسم الكامل بالضبط كما في البيانات.
-- إذا لم تجد الطالب، اسأل عن الاسم الصحيح.
-- الدرجات من 0 إلى 3. إذا أعطاك رقم أكبر من 3 أو سالب، نبّهه ولا تنفذ.
-- النجوم: الحد الأقصى 1 في المرة. إذا طلب أكثر نبّهه.`;
+### الأكشنات:
+- تشغيل سورة: {"reply": "...", "action": "play_surah", "surah": رقم, "reciterId": رقم}
+- ردود عادية: {"reply": "نص الرد"}`;
 
 // ─────────────────────────────────────────────
 // ACTION EXECUTOR
 // ─────────────────────────────────────────────
 
 async function findStudentByName(name, halaqaId) {
-    // Try exact match first
+    if (!name) return null;
+
+    // Try exact match on fullName
     let snap = await db.collection('students')
         .where('fullName', '==', name)
         .limit(1)
@@ -136,13 +159,12 @@ async function findStudentByName(name, halaqaId) {
 
     if (!snap.empty) return { id: snap.docs[0].id, data: snap.docs[0].data() };
 
-    // Try within halaqa if provided
+    // Try within halaqa if provided (fuzzy)
     if (halaqaId) {
         snap = await db.collection('students')
             .where('halaqaId', '==', halaqaId)
             .get();
 
-        // Fuzzy match: check if name contains or is contained
         for (const doc of snap.docs) {
             const fullName = doc.data().fullName || '';
             if (fullName.includes(name) || name.includes(fullName)) {
@@ -167,6 +189,23 @@ function getTodayStr() {
     return new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
 }
 
+// Log action to Firestore
+async function logAction(action, params, executorId, result) {
+    try {
+        await db.collection('robo_action_log').add({
+            action,
+            params,
+            executorId,
+            success: result.success,
+            message: result.message || result.error || '',
+            timestamp: admin.firestore.FieldValue.serverTimestamp(),
+            date: getTodayStr(),
+        });
+    } catch (e) {
+        console.error('Failed to log action:', e);
+    }
+}
+
 async function executeAction(action, params, halaqaId, executorId) {
     const today = getTodayStr();
 
@@ -177,7 +216,7 @@ async function executeAction(action, params, halaqaId, executorId) {
 
             const docId = `${today}_${student.id}`;
 
-            // Validate scores (0-10 range)
+            // Validate scores (0-3 range)
             const scoreFields = ['lessonScore', 'revisionScore', 'tilawaScore', 'homeworkScore'];
             const scoreLabels = { lessonScore: 'الدرس', revisionScore: 'المراجعة', tilawaScore: 'التلاوة', homeworkScore: 'الواجب' };
             let warnings = [];
@@ -192,7 +231,7 @@ async function executeAction(action, params, halaqaId, executorId) {
             if (warnings.length > 0) {
                 return {
                     success: false,
-                    error: `⚠️ درجات خارج النطاق:\n${warnings.join('\n')}\n\nالدرجات يجب أن تكون من 0 إلى 3. أعد المحاولة بأرقام صحيحة.`
+                    error: `⚠️ درجات خارج النطاق:\n${warnings.join('\n')}\n\nالدرجات يجب أن تكون من 0 إلى 3.`
                 };
             }
 
@@ -227,11 +266,13 @@ async function executeAction(action, params, halaqaId, executorId) {
             await db.collection('progress').doc(docId).set(progressData, { merge: true });
 
             const total = progressData.lessonScore + progressData.revisionScore + progressData.tilawaScore + progressData.homeworkScore;
-            return {
+            const result = {
                 success: true,
-                message: `تم رصد درجات ${student.data.fullName} (${total}/40) ✅`,
+                message: `✅ تم رصد درجات ${student.data.fullName} (${total}/12)`,
                 studentName: student.data.fullName,
             };
+            await logAction('record_progress', params, executorId, result);
+            return result;
         }
 
         case 'record_attendance': {
@@ -253,11 +294,13 @@ async function executeAction(action, params, halaqaId, executorId) {
             }, { merge: true });
 
             const statusLabel = status === 'present' ? 'حضور ✅' : status === 'absent' ? 'غياب ❌' : 'إذن 📋';
-            return {
+            const result = {
                 success: true,
                 message: `تم تسجيل ${statusLabel} لـ ${student.data.fullName}`,
                 studentName: student.data.fullName,
             };
+            await logAction('record_attendance', params, executorId, result);
+            return result;
         }
 
         case 'add_stars': {
@@ -268,18 +311,19 @@ async function executeAction(action, params, halaqaId, executorId) {
             if (rawCount < 1 || rawCount > 1) {
                 return { success: false, error: `⚠️ الحد الأقصى للنجوم هو 1 في المرة الواحدة.` };
             }
-            const count = rawCount;
 
             await db.collection('students').doc(student.id).update({
-                stars: admin.firestore.FieldValue.increment(count),
+                stars: admin.firestore.FieldValue.increment(rawCount),
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
 
-            return {
+            const result = {
                 success: true,
-                message: `تم إضافة ${count} نجمة لـ ${student.data.fullName} ⭐`,
+                message: `⭐ تم إضافة نجمة لـ ${student.data.fullName}`,
                 studentName: student.data.fullName,
             };
+            await logAction('add_stars', params, executorId, result);
+            return result;
         }
 
         case 'bulk_attendance': {
@@ -309,11 +353,13 @@ async function executeAction(action, params, halaqaId, executorId) {
                 successCount++;
             }
 
-            let msg = `تم تسجيل ${status === 'present' ? 'حضور' : 'غياب'} ${successCount} طالب ✅`;
+            let msg = `✅ تم تسجيل ${status === 'present' ? 'حضور' : 'غياب'} ${successCount} طالب`;
             if (failedNames.length > 0) {
                 msg += `\n⚠️ لم أجد: ${failedNames.join('، ')}`;
             }
-            return { success: true, message: msg };
+            const result = { success: true, message: msg };
+            await logAction('bulk_attendance', params, executorId, result);
+            return result;
         }
 
         default:
@@ -388,7 +434,7 @@ async function fetchStudentContext(studentId) {
             for (const p of progDocs.slice(0, 5)) {
                 const total = (Number(p.lessonScore || 0) + Number(p.revisionScore || 0) +
                     Number(p.tilawaScore || 0) + Number(p.homeworkScore || 0));
-                ctx += `\n- ${p.date}: مجموع=${total}/40 (درس=${p.lessonScore || 0}، مراجعة=${p.revisionScore || 0}، تلاوة=${p.tilawaScore || 0}، واجب=${p.homeworkScore || 0})${p.hasStar ? ' ⭐' : ''}`;
+                ctx += `\n- ${p.date}: مجموع=${total}/12 (درس=${p.lessonScore || 0}، مراجعة=${p.revisionScore || 0}، تلاوة=${p.tilawaScore || 0}، واجب=${p.homeworkScore || 0})${p.hasStar ? ' ⭐' : ''}`;
             }
         }
 
@@ -413,10 +459,11 @@ async function fetchTeacherContext(teacherId) {
         const halaqaId = teacher.halaqaId;
         if (!halaqaId) return { context: '\n(المعلم غير مربوط بحلقة)', halaqaId: null };
 
-        const [studentsSnap, todayAttSnap, monthAttSnap] = await Promise.all([
+        const [studentsSnap, todayAttSnap, monthAttSnap, monthProgSnap] = await Promise.all([
             db.collection('students').where('halaqaId', '==', halaqaId).get(),
             db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '==', today).get(),
             db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
+            db.collection('progress').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
         ]);
 
         let ctx = '\n--- بيانات الحلقة ---';
@@ -424,7 +471,7 @@ async function fetchTeacherContext(teacherId) {
         ctx += `\nالحلقة: ${teacher.halaqaName || halaqaId}`;
         ctx += `\nعدد الطلاب: ${studentsSnap.size}`;
 
-        // List ALL students with their names (for name matching)
+        // List ALL students with names
         ctx += `\n\nقائمة الطلاب:`;
         const studentsList = [];
         studentsSnap.forEach(doc => {
@@ -442,26 +489,32 @@ async function fetchTeacherContext(teacherId) {
 
         const absentToday = [];
         const presentToday = [];
+        const notRecorded = [];
         studentsSnap.forEach(doc => {
             const s = doc.data();
             const status = todayStatuses[doc.id];
-            if (status === 'absent') absentToday.push(s.fullName || 'بدون اسم');
+            if (status === 'absent') absentToday.push(s.fullName);
             else if (status === 'present' || status === 'sard') presentToday.push(s.fullName);
+            else notRecorded.push(s.fullName);
         });
 
-        ctx += `\n\nحضور اليوم (${today}): ${presentToday.length} حاضر، ${absentToday.length} غائب من ${studentsSnap.size}`;
-        if (absentToday.length > 0) {
-            ctx += `\nالغائبون اليوم: ${absentToday.join('، ')}`;
-        }
+        ctx += `\n\nحضور اليوم (${today}): ${presentToday.length} حاضر، ${absentToday.length} غائب، ${notRecorded.length} لم يُسجّل`;
+        if (absentToday.length > 0) ctx += `\nالغائبون: ${absentToday.join('، ')}`;
+        if (notRecorded.length > 0) ctx += `\nلم يُرصد بعد: ${notRecorded.join('، ')}`;
 
-        // Monthly stats
+        // Monthly stats per student
         const monthlyStats = {};
         monthAttSnap.forEach(doc => {
             const d = doc.data();
-            if (!monthlyStats[d.studentId]) monthlyStats[d.studentId] = { present: 0, absent: 0, excused: 0, name: d.studentName || '' };
+            if (!monthlyStats[d.studentId]) monthlyStats[d.studentId] = { present: 0, absent: 0, excused: 0, name: '' };
             if (d.status === 'present' || d.status === 'sard') monthlyStats[d.studentId].present++;
             else if (d.status === 'absent') monthlyStats[d.studentId].absent++;
             else if (d.status === 'excused') monthlyStats[d.studentId].excused++;
+        });
+
+        // Fill names
+        studentsSnap.forEach(doc => {
+            if (monthlyStats[doc.id]) monthlyStats[doc.id].name = doc.data().fullName || '';
         });
 
         const sorted = Object.entries(monthlyStats).sort((a, b) => b[1].absent - a[1].absent);
@@ -473,8 +526,30 @@ async function fetchTeacherContext(teacherId) {
             mostAbsent.forEach(([, s]) => ctx += `\n- ${s.name}: ${s.absent} أيام غياب`);
         }
         if (bestStudents.length > 0) {
-            ctx += `\n\nالطلاب المتميزون (بدون غياب):`;
+            ctx += `\nالطلاب المتميزون (بدون غياب):`;
             bestStudents.forEach(([, s]) => ctx += `\n- ${s.name}: ${s.present} أيام حضور`);
+        }
+
+        // Monthly progress averages
+        const progByStudent = {};
+        monthProgSnap.forEach(doc => {
+            const d = doc.data();
+            if (!progByStudent[d.studentId]) progByStudent[d.studentId] = { count: 0, total: 0 };
+            const total = (Number(d.lessonScore || 0) + Number(d.revisionScore || 0) + Number(d.tilawaScore || 0) + Number(d.homeworkScore || 0));
+            progByStudent[d.studentId].total += total;
+            progByStudent[d.studentId].count++;
+        });
+
+        if (Object.keys(progByStudent).length > 0) {
+            ctx += `\n\nمتوسط الدرجات الشهرية:`;
+            let totalAvg = 0;
+            let count = 0;
+            for (const [sid, stats] of Object.entries(progByStudent)) {
+                const avg = (stats.total / stats.count).toFixed(1);
+                totalAvg += Number(avg);
+                count++;
+            }
+            ctx += `\nمتوسط الحلقة: ${(totalAvg / count).toFixed(1)}/12`;
         }
 
         return { context: ctx, halaqaId };
@@ -507,8 +582,6 @@ async function fetchAdminContext() {
         });
         ctx += `\nإجمالي الطلاب: ${studentsSnap.size} (أساسي: ${mainCount}، احتياط: ${reserveCount})`;
         ctx += `\nعدد الحلقات: ${halaqatSnap.size}`;
-
-        // Include all student names for action matching
         ctx += `\n\nقائمة الطلاب: ${allStudentNames.join('، ')}`;
 
         let todayPresent = 0, todayAbsent = 0, todayExcused = 0;
@@ -537,7 +610,7 @@ async function fetchAdminContext() {
         }
 
         if (!demotionSnap.empty) {
-            ctx += `\n\nآخر حالات النقل للاحتياط:`;
+            ctx += `\n\nآخر حالات النقل:`;
             demotionSnap.forEach(doc => {
                 const d = doc.data();
                 ctx += `\n- ${d.studentName || 'غير معروف'}: ${d.reason || 'بدون سبب'}`;
@@ -549,6 +622,11 @@ async function fetchAdminContext() {
         console.error('Admin context error:', e);
         return '\n(فشل جلب إحصائيات الأكاديمية)';
     }
+}
+
+async function fetchParentContext(studentId) {
+    // Parents see the same data as students
+    return await fetchStudentContext(studentId);
 }
 
 // ─────────────────────────────────────────────
@@ -567,13 +645,36 @@ export default async function handler(req, res) {
         return res.status(500).json({ error: 'GROQ_API_KEY not set.' });
     }
 
-    const { message, role, studentId, teacherId, history } = req.body;
+    const { message, role, studentId, teacherId, history, confirmAction } = req.body;
 
-    if (!message) {
+    if (!message && !confirmAction) {
         return res.status(400).json({ error: 'Message is required' });
     }
 
     try {
+        // ── Handle confirmation of pending action ──
+        if (confirmAction) {
+            const { action, params } = confirmAction;
+            // Map confirm_ actions to actual actions
+            const actualAction = action.replace('confirm_', '');
+            const halaqaId = null; // Will use fuzzy search
+
+            // Fetch halaqaId for teacher
+            let execHalaqaId = null;
+            if (teacherId) {
+                const teacherDoc = await db.collection('users').doc(teacherId).get();
+                if (teacherDoc.exists) execHalaqaId = teacherDoc.data().halaqaId;
+            }
+
+            const result = await executeAction(actualAction, params, execHalaqaId, teacherId || 'robo_ai');
+            return res.status(200).json({
+                success: true,
+                reply: result.success ? result.message : `⚠️ ${result.error}`,
+                action: actualAction,
+                actionResult: result,
+            });
+        }
+
         let systemPrompt;
         let context = '';
         let halaqaId = null;
@@ -591,6 +692,11 @@ export default async function handler(req, res) {
                 context = await fetchAdminContext();
                 break;
             }
+            case 'parent': {
+                systemPrompt = PARENT_PROMPT;
+                context = await fetchParentContext(studentId);
+                break;
+            }
             case 'student':
             default: {
                 systemPrompt = STUDENT_PROMPT;
@@ -605,7 +711,7 @@ export default async function handler(req, res) {
         ];
 
         if (history && Array.isArray(history)) {
-            for (const h of history.slice(-6)) {
+            for (const h of history.slice(-8)) {
                 messages.push({
                     role: h.role === 'user' ? 'user' : 'assistant',
                     content: h.text
@@ -650,11 +756,26 @@ export default async function handler(req, res) {
             parsed = { reply: rawText };
         }
 
-        // ── Execute action if present (teacher/admin only) ──
-        let actionResult = null;
-        const executableActions = ['record_progress', 'record_attendance', 'add_stars', 'bulk_attendance'];
+        // ── Confirmation flow: return pending action to client ──
+        const confirmableActions = ['confirm_progress', 'confirm_attendance', 'confirm_stars', 'confirm_bulk_attendance'];
 
-        if (parsed.action && executableActions.includes(parsed.action) && (role === 'teacher' || role === 'admin')) {
+        if (parsed.action && confirmableActions.includes(parsed.action) && (role === 'teacher' || role === 'admin')) {
+            return res.status(200).json({
+                success: true,
+                reply: parsed.reply || 'هل تريد تنفيذ هذا الأمر؟',
+                action: parsed.action,
+                pendingAction: {
+                    action: parsed.action,
+                    params: parsed.params || {},
+                },
+            });
+        }
+
+        // ── Direct actions (non-confirmable like play_surah, daily_report) ──
+        let actionResult = null;
+        const directActions = ['record_progress', 'record_attendance', 'add_stars', 'bulk_attendance'];
+
+        if (parsed.action && directActions.includes(parsed.action) && (role === 'teacher' || role === 'admin')) {
             try {
                 actionResult = await executeAction(
                     parsed.action,
@@ -663,7 +784,6 @@ export default async function handler(req, res) {
                     teacherId || studentId || 'robo_ai'
                 );
 
-                // Override reply with actual result
                 if (actionResult.success) {
                     parsed.reply = actionResult.message;
                 } else {
