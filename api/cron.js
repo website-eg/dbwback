@@ -182,7 +182,7 @@ async function runAutoAbsent(manual = true) {
         );
         if (isHalaqaHoliday) continue;
 
-        const attRef = db.collection("attendance").doc();
+        const attRef = db.collection("attendance").doc(`${todayDateStr}_${doc.id}`);
         batch.set(attRef, {
             studentId: doc.id,
             studentName: s.fullName || "Unknown",
