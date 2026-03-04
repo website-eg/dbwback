@@ -88,11 +88,7 @@ export default async function handler(req, res) {
                 results.checkAbsence = await runCheckAbsence();
                 console.log("✅ Check Absence done:", results.checkAbsence);
 
-                // 3. Smart AI Notifications
-                results.smartNotifs = await runSmartNotifications();
-                console.log("✅ Smart Notifications done:", results.smartNotifs);
-
-                // 4. Check Promotion (only on 1st of month)
+                // 3. Check Promotion (only on 1st of month)
                 const today = new Date();
                 const dayOfMonth = parseInt(today.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" }).split('-')[2]);
                 if (dayOfMonth === 1) {
@@ -112,8 +108,6 @@ export default async function handler(req, res) {
                 return res.status(200).json(await runCheckPromotion());
             case 'agent-report':
                 return await handleAgentReport(req, res);
-            case 'smart-notifs':
-                return res.status(200).json(await runSmartNotifications());
             default:
                 return res.status(400).json({ error: `Unknown action: ${action}` });
         }
@@ -551,96 +545,4 @@ function getDayIndex(dayName) {
         'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6
     };
     return map[dayName] ?? -1;
-}
-
-// ==========================================
-// ACTION 5: Smart AI Notifications
-// Sends alerts to teachers about:
-// - Students with 3+ consecutive absences
-// - Students missing grades today
-// ==========================================
-async function runSmartNotifications() {
-    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-    let teacherAlerts = 0;
-
-    try {
-        // Get all halaqat with their teachers
-        const halaqatSnap = await db.collection('halaqat').get();
-
-        for (const halaqaDoc of halaqatSnap.docs) {
-            const halaqa = halaqaDoc.data();
-            const teacherId = halaqa.teacherId;
-            if (!teacherId) continue;
-
-            const halaqaId = halaqaDoc.id;
-
-            // Get students in this halaqa
-            const studentsSnap = await db.collection('students')
-                .where('halaqaId', '==', halaqaId)
-                .get();
-
-            if (studentsSnap.empty) continue;
-
-            // Check last 3 days of attendance for streaks
-            const dates = [];
-            for (let i = 0; i < 3; i++) {
-                const d = new Date();
-                d.setDate(d.getDate() - i);
-                dates.push(d.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" }));
-            }
-
-            const attSnap = await db.collection('attendance')
-                .where('halaqaId', '==', halaqaId)
-                .where('date', 'in', dates)
-                .get();
-
-            // Track absences per student
-            const absenceMap = {}; // studentId -> [dates absent]
-            attSnap.forEach(doc => {
-                const d = doc.data();
-                if (d.status === 'absent') {
-                    if (!absenceMap[d.studentId]) absenceMap[d.studentId] = [];
-                    absenceMap[d.studentId].push(d.date);
-                }
-            });
-
-            // Find students absent 3+ consecutive days
-            const streakStudents = [];
-            for (const [sid, absentDates] of Object.entries(absenceMap)) {
-                if (absentDates.length >= 3) {
-                    const student = studentsSnap.docs.find(d => d.id === sid);
-                    if (student) streakStudents.push(student.data().fullName || 'غير معروف');
-                }
-            }
-
-            // Send alert to teacher if there are streak students
-            if (streakStudents.length > 0) {
-                const teacherDoc = await db.collection('users').doc(teacherId).get();
-                if (teacherDoc.exists) {
-                    const fcmToken = teacherDoc.data().fcmToken;
-                    if (fcmToken) {
-                        try {
-                            await admin.messaging().send({
-                                notification: {
-                                    title: '⚠️ تنبيه غياب متكرر',
-                                    body: `${streakStudents.length} طالب غابوا 3 أيام متتالية: ${streakStudents.join('، ')}`,
-                                },
-                                data: { type: 'smart_alert', halaqaId },
-                                token: fcmToken,
-                                android: { priority: 'high' },
-                            });
-                            teacherAlerts++;
-                        } catch (e) {
-                            console.warn(`Smart notif failed for teacher ${teacherId}:`, e.code || e.message);
-                        }
-                    }
-                }
-            }
-        }
-
-        return { success: true, teacherAlerts };
-    } catch (e) {
-        console.error('Smart notifications error:', e);
-        return { success: false, error: e.message };
-    }
 }
