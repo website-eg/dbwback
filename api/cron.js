@@ -120,13 +120,13 @@ export default async function handler(req, res) {
 // ACTION 1: Auto Absent (Daily System)
 // ==========================================
 async function runAutoAbsent() {
+    // Use TODAY's date (for both cron at midnight and manual trigger)
     const now = new Date();
-    const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-    const todayDateStr = yesterday.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-    const dayName = yesterday.toLocaleDateString("en-US", { timeZone: "Africa/Cairo", weekday: "long" });
+    const todayDateStr = now.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+    const dayName = now.toLocaleDateString("en-US", { timeZone: "Africa/Cairo", weekday: "long" });
     const dayIndex = getDayIndex(dayName);
 
-    console.log(`📅 Check Auto Absence for YESTERDAY: ${todayDateStr} (${dayName}, idx:${dayIndex})`);
+    console.log(`📅 Check Auto Absence for TODAY: ${todayDateStr} (${dayName}, idx:${dayIndex})`);
 
     // 1. Load Rules
     const rulesSnap = await db.collection("app_settings").doc("rules").get();
@@ -253,15 +253,15 @@ async function runCheckAbsence() {
 
     if (studentsSnap.empty) return { message: "No active main students." };
 
-    // 4. Fetch all absences for this month
+    // 4. Fetch all attendance for this month (single field query — no composite index needed)
     const attSnap = await db.collection("attendance")
         .where("date", ">=", startOfMonthStr)
-        .where("status", "in", ["absent", "excused"])
         .get();
 
     const statsMap = {};
     attSnap.forEach(doc => {
         const d = doc.data();
+        if (d.status !== 'absent' && d.status !== 'excused') return; // filter in memory
         if (!statsMap[d.studentId]) statsMap[d.studentId] = { absent: 0, excused: 0 };
         if (d.status === 'absent') statsMap[d.studentId].absent++;
         else if (d.status === 'excused') statsMap[d.studentId].excused++;
@@ -428,14 +428,20 @@ async function runCheckPromotion() {
         const target = halaqatCache[studentHalaqaId];
         if (!target) continue;
 
+        // Fetch attendance for this student in the period (simple query, filter in memory)
         const attSnap = await db.collection("attendance")
             .where("studentId", "==", sid)
             .where("date", ">=", firstDay)
             .where("date", "<=", lastDay)
-            .where("status", "in", ["present", "sard"])
             .get();
 
-        if (attSnap.size < minAttendance) continue;
+        // Count only present/sard in memory
+        let presentCount = 0;
+        attSnap.forEach(a => {
+            const st = a.data().status;
+            if (st === 'present' || st === 'sard') presentCount++;
+        });
+        if (presentCount < minAttendance) continue;
 
         const progSnap = await db.collection("progress")
             .where("studentId", "==", sid)
