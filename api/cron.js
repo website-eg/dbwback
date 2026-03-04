@@ -161,10 +161,11 @@ async function runAutoAbsent(manual = true) {
     const studentsSnap = await db.collection("students").get();
     if (studentsSnap.empty) return { message: "No active students found." };
 
-    const batch = db.batch();
+    let batch = db.batch();
     let opCount = 0;
     let absentCount = 0;
     const processedStudentIds = new Set();
+    const newlyAbsentIds = []; // Track who we mark absent for notifications
 
     const attendanceSnap = await db.collection("attendance").where("date", "==", todayDateStr).get();
     attendanceSnap.forEach((doc) => processedStudentIds.add(doc.data().studentId));
@@ -194,31 +195,23 @@ async function runAutoAbsent(manual = true) {
             timestamp: admin.firestore.FieldValue.serverTimestamp(),
         });
 
+        newlyAbsentIds.push(doc.id);
         opCount++;
         absentCount++;
 
         if (opCount >= 450) {
             await batch.commit();
+            batch = db.batch(); // Create NEW batch after commit
             opCount = 0;
         }
     }
 
     if (opCount > 0) await batch.commit();
 
-    // Fire & forget push notifications
-    for (const doc of studentsSnap.docs) {
-        const s = doc.data();
-        if (processedStudentIds.has(doc.id)) continue;
-        if (s.type === 'reserve') continue;
-        const activeDays = (s.halaqaId && halaqaDays[s.halaqaId]?.length > 0) ? halaqaDays[s.halaqaId] : globalDays;
-        if (!activeDays.includes(dayIndex)) continue;
-        const isHalaqaHoliday = holidaysList.some(h =>
-            h.halaqaId === s.halaqaId && todayDateStr >= h.from && todayDateStr <= h.to
-        );
-        if (isHalaqaHoliday) continue;
-
+    // Fire & forget push notifications (only for newly absent students)
+    for (const studentId of newlyAbsentIds) {
         sendPushToStudent(
-            doc.id,
+            studentId,
             '⚠️ تسجيل غياب',
             `تم تسجيل غيابك ليوم ${todayDateStr}. إذا كنت حاضراً تواصل مع المعلم.`,
             { type: 'absence', date: todayDateStr }
@@ -261,9 +254,12 @@ async function runCheckAbsence() {
 
     if (studentsSnap.empty) return { message: "No active main students." };
 
-    // 4. Fetch all attendance for this month (single field query — no composite index needed)
+    // 4. Fetch all attendance for this month (bounded query)
+    const endOfMonthDate = new Date(year, now.getMonth() + 1, 0);
+    const endOfMonthStr = `${year}-${month}-${String(endOfMonthDate.getDate()).padStart(2, '0')}`;
     const attSnap = await db.collection("attendance")
         .where("date", ">=", startOfMonthStr)
+        .where("date", "<=", endOfMonthStr)
         .get();
 
     const statsMap = {};
@@ -317,8 +313,9 @@ async function runCheckAbsence() {
     }
 
     // 5. Create alerts AND auto-move students to reserve
-    const batch = db.batch();
+    let batch = db.batch();
     let movedCount = 0;
+    let opCount = 0;
 
     for (const a of alerts) {
         // Check if alert already handled this month (avoid re-demoting)
@@ -342,6 +339,7 @@ async function runCheckAbsence() {
             executedAt: admin.firestore.FieldValue.serverTimestamp(),
             month: alertMonthId
         }, { merge: true });
+        opCount++;
 
         // AUTO-MOVE: If there's a paired reserve halaqa, move the student
         if (a.targetReserveId) {
@@ -357,7 +355,15 @@ async function runCheckAbsence() {
                 demotionReason: a.reason,
                 updatedAt: admin.firestore.FieldValue.serverTimestamp(),
             });
+            opCount++;
             movedCount++;
+        }
+
+        // Batch overflow guard
+        if (opCount >= 450) {
+            await batch.commit();
+            batch = db.batch();
+            opCount = 0;
         }
 
         // Send notification
@@ -369,7 +375,7 @@ async function runCheckAbsence() {
         );
     }
 
-    await batch.commit();
+    if (opCount > 0) await batch.commit();
 
     return {
         success: true,
@@ -424,7 +430,7 @@ async function runCheckPromotion() {
         return { message: "No active reserve students found." };
     }
 
-    const batch = db.batch();
+    let batch = db.batch();
     let promotedCount = 0;
     let opCount = 0;
 
@@ -490,6 +496,7 @@ async function runCheckPromotion() {
 
         if (opCount >= 450) {
             await batch.commit();
+            batch = db.batch(); // Create NEW batch after commit
             opCount = 0;
         }
     }

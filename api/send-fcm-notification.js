@@ -33,6 +33,15 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: "Method Not Allowed" });
     }
 
+    // Basic auth: require API key or Firebase auth token
+    const apiKey = req.headers['x-api-key'];
+    const authToken = req.headers.authorization?.split('Bearer ')[1];
+    const expectedKey = process.env.INTERNAL_API_KEY;
+
+    if (expectedKey && apiKey !== expectedKey && !authToken) {
+        return res.status(401).json({ error: "Unauthorized: Missing API key or auth token" });
+    }
+
     const { token, title, body, data } = req.body;
 
     if (!token) {

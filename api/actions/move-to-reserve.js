@@ -40,7 +40,6 @@ export default async function handler(req, res) {
 
       transaction.update(studentRef, {
         type: "reserve",
-        status: "inactive",
         demotionDate: admin.firestore.FieldValue.serverTimestamp(),
         demotionReason: reason || "بواسطة الأدمن",
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
