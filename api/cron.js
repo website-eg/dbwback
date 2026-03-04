@@ -149,8 +149,8 @@ async function runAutoAbsent() {
         return { message: "Today is a Global Holiday. No absence recorded.", skipped: true };
     }
 
-    // 3. Process Students
-    const studentsSnap = await db.collection("students").where("status", "==", "active").get();
+    // 3. Process Students (no 'status' field on students — fetch all non-reserve)
+    const studentsSnap = await db.collection("students").get();
     if (studentsSnap.empty) return { message: "No active students found." };
 
     const batch = db.batch();
@@ -246,10 +246,9 @@ async function runCheckAbsence() {
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const startOfMonthStr = `${year}-${month}-01`;
 
-    // 3. Active Main Students
+    // 3. Active Main Students (filter by type only, no 'status' field)
     const studentsSnap = await db.collection("students")
         .where("type", "==", "main")
-        .where("status", "==", "active")
         .get();
 
     if (studentsSnap.empty) return { message: "No active main students." };
@@ -412,7 +411,7 @@ async function runCheckPromotion() {
         return { message: "لم يتم تحديد أي ربط لحلقات الاحتياط.", skipped: true };
     }
 
-    const reserveSnap = await db.collection("students").where("type", "==", "reserve").where("status", "==", "active").get();
+    const reserveSnap = await db.collection("students").where("type", "==", "reserve").get();
     if (reserveSnap.empty) {
         return { message: "No active reserve students found." };
     }
