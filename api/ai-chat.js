@@ -1,6 +1,6 @@
 // api/ai-chat.js
-// Gemini AI proxy for "روبو" assistant
-// Receives user message + role, returns AI response with optional actions
+// Groq AI proxy for "روبو" assistant (Llama 3.3 70B)
+// Free tier: 30 RPM, 14,400 requests/day
 
 import admin from "firebase-admin";
 
@@ -19,7 +19,7 @@ if (!admin.apps.length) {
 
 const db = admin.firestore();
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 const SYSTEM_PROMPT = `أنت "روبو" — مساعد ذكي لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
 
@@ -62,8 +62,8 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
     if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-    if (!GEMINI_API_KEY) {
-        return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
+    if (!GROQ_API_KEY) {
+        return res.status(500).json({ error: 'GROQ_API_KEY not set. Add it in Vercel env vars.' });
     }
 
     const { message, role, studentId, history } = req.body;
@@ -77,7 +77,6 @@ export default async function handler(req, res) {
         let context = '';
 
         if (studentId && role === 'student') {
-            // Fetch student attendance data for context
             const now = new Date();
             const year = now.getFullYear();
             const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -99,54 +98,51 @@ export default async function handler(req, res) {
             context = `\nبيانات الطالب هذا الشهر: حضور=${present}، غياب=${absent}، أعذار=${excused}`;
         }
 
-        // Build messages for Gemini
-        const contents = [];
+        // Build messages for Groq (OpenAI format)
+        const messages = [
+            { role: 'system', content: SYSTEM_PROMPT }
+        ];
 
-        // Add history if provided
+        // Add history
         if (history && Array.isArray(history)) {
-            for (const h of history.slice(-6)) { // Last 6 messages for context
-                contents.push({
-                    role: h.role === 'user' ? 'user' : 'model',
-                    parts: [{ text: h.text }]
+            for (const h of history.slice(-6)) {
+                messages.push({
+                    role: h.role === 'user' ? 'user' : 'assistant',
+                    content: h.text
                 });
             }
         }
 
         // Add current message
-        contents.push({
+        messages.push({
             role: 'user',
-            parts: [{ text: message + context }]
+            content: message + context
         });
 
-        // Call Gemini API
-        const geminiRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-            {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    system_instruction: {
-                        parts: [{ text: SYSTEM_PROMPT }]
-                    },
-                    contents,
-                    generationConfig: {
-                        temperature: 0.7,
-                        topP: 0.9,
-                        maxOutputTokens: 1024,
-                        responseMimeType: "application/json",
-                    }
-                })
-            }
-        );
+        // Call Groq API (OpenAI-compatible)
+        const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${GROQ_API_KEY}`,
+            },
+            body: JSON.stringify({
+                model: 'llama-3.3-70b-versatile',
+                messages,
+                temperature: 0.7,
+                max_tokens: 1024,
+                response_format: { type: 'json_object' },
+            })
+        });
 
-        const geminiData = await geminiRes.json();
+        const groqData = await groqRes.json();
 
-        if (!geminiRes.ok) {
-            console.error('Gemini error:', JSON.stringify(geminiData));
-            return res.status(500).json({ error: 'Gemini API error', details: geminiData.error?.message });
+        if (!groqRes.ok) {
+            console.error('Groq error:', JSON.stringify(groqData));
+            return res.status(500).json({ error: 'Groq API error', details: groqData.error?.message });
         }
 
-        const rawText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
+        const rawText = groqData.choices?.[0]?.message?.content || '{}';
 
         // Parse AI response
         let parsed;
