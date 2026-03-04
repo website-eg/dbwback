@@ -71,6 +71,7 @@ export default async function handler(req, res) {
     if (req.method === 'OPTIONS') return res.status(200).end();
 
     const action = req.query.action || req.body?.action || 'all';
+    const isManual = req.query.manual !== 'false'; // manual by default, cron passes manual=false
 
     try {
         switch (action) {
@@ -79,8 +80,8 @@ export default async function handler(req, res) {
                 const results = {};
                 console.log("🔄 Running ALL cron tasks...");
 
-                // 1. Auto Absent
-                results.autoAbsent = await runAutoAbsent();
+                // 1. Auto Absent (cron = yesterday, manual = today)
+                results.autoAbsent = await runAutoAbsent(false); // cron always uses yesterday
                 console.log("✅ Auto Absent done:", results.autoAbsent);
 
                 // 2. Check Absence (Demotion)
@@ -100,7 +101,7 @@ export default async function handler(req, res) {
                 return res.status(200).json({ success: true, results });
             }
             case 'auto-absent':
-                return res.status(200).json(await runAutoAbsent());
+                return res.status(200).json(await runAutoAbsent(isManual));
             case 'check-absence':
                 return res.status(200).json(await runCheckAbsence());
             case 'check-promotion':
@@ -119,14 +120,21 @@ export default async function handler(req, res) {
 // ==========================================
 // ACTION 1: Auto Absent (Daily System)
 // ==========================================
-async function runAutoAbsent() {
-    // Use TODAY's date (for both cron at midnight and manual trigger)
+async function runAutoAbsent(manual = true) {
     const now = new Date();
-    const todayDateStr = now.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
-    const dayName = now.toLocaleDateString("en-US", { timeZone: "Africa/Cairo", weekday: "long" });
+    let targetDate;
+    if (manual) {
+        // Manual trigger: check TODAY
+        targetDate = now;
+    } else {
+        // Cron (midnight): check YESTERDAY (the day that just ended)
+        targetDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    }
+    const todayDateStr = targetDate.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+    const dayName = targetDate.toLocaleDateString("en-US", { timeZone: "Africa/Cairo", weekday: "long" });
     const dayIndex = getDayIndex(dayName);
 
-    console.log(`📅 Check Auto Absence for TODAY: ${todayDateStr} (${dayName}, idx:${dayIndex})`);
+    console.log(`📅 Auto Absence for ${manual ? 'TODAY' : 'YESTERDAY'}: ${todayDateStr} (${dayName}, idx:${dayIndex})`);
 
     // 1. Load Rules
     const rulesSnap = await db.collection("app_settings").doc("rules").get();
@@ -428,32 +436,37 @@ async function runCheckPromotion() {
         const target = halaqatCache[studentHalaqaId];
         if (!target) continue;
 
-        // Fetch attendance for this student in the period (simple query, filter in memory)
+        // Fetch attendance for this student (simple single-field query)
         const attSnap = await db.collection("attendance")
             .where("studentId", "==", sid)
-            .where("date", ">=", firstDay)
-            .where("date", "<=", lastDay)
             .get();
 
-        // Count only present/sard in memory
+        // Count only present/sard within date range in memory
         let presentCount = 0;
         attSnap.forEach(a => {
-            const st = a.data().status;
-            if (st === 'present' || st === 'sard') presentCount++;
+            const d = a.data();
+            if (d.date >= firstDay && d.date <= lastDay && (d.status === 'present' || d.status === 'sard')) {
+                presentCount++;
+            }
         });
         if (presentCount < minAttendance) continue;
 
+        // Fetch progress for this student (simple single-field query)
         const progSnap = await db.collection("progress")
             .where("studentId", "==", sid)
-            .where("date", ">=", firstDay)
-            .where("date", "<=", lastDay)
             .get();
 
-        if (progSnap.empty) continue;
-
-        let allScoresMet = true;
+        // Filter by date range in memory
+        const progDocs = [];
         progSnap.forEach(p => {
             const d = p.data();
+            if (d.date >= firstDay && d.date <= lastDay) progDocs.push(d);
+        });
+
+        if (progDocs.length === 0) continue;
+
+        let allScoresMet = true;
+        progDocs.forEach(d => {
             const total = Number(d.lessonScore || 0) + Number(d.revisionScore || 0) +
                 Number(d.tilawaScore || 0) + Number(d.homeworkScore || 0);
             if (total < minSessionScore) allScoresMet = false;
