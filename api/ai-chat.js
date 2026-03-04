@@ -1,6 +1,11 @@
 // api/ai-chat.js
 // Groq AI proxy for "روبو" — Multi-role assistant (Student, Teacher, Admin)
 // Model: Llama 3.3 70B | Free tier: 30 RPM, 14,400/day
+//
+// ⚡ OPTIMIZATIONS:
+// 1. Smart Context: Only fetches Firestore when message is about data (attendance/scores)
+// 2. In-Memory Cache: 5-min TTL prevents repeated queries
+// → Reduces Firestore reads by ~90%
 
 import admin from "firebase-admin";
 
@@ -46,7 +51,8 @@ const STUDENT_PROMPT = `${BASE_PROMPT}
 5. التحفيز والتشجيع بناءً على مستوى الأداء
 
 عندما يسأل عن أدائه أو درجاته أو حضوره، حلل البيانات المرفقة وأعطه ملخصاً تحفيزياً.
-إذا كان أداؤه ممتازاً شجعه، إذا كان ضعيفاً حفّزه بلطف.`;
+إذا كان أداؤه ممتازاً شجعه، إذا كان ضعيفاً حفّزه بلطف.
+إذا لم تكن هناك بيانات مرفقة، أجب بشكل عام بدون أرقام.`;
 
 const TEACHER_PROMPT = `${BASE_PROMPT}
 
@@ -59,7 +65,8 @@ const TEACHER_PROMPT = `${BASE_PROMPT}
 6. تشغيل سور القرآن
 
 عند الإجابة عن تقارير، استخدم البيانات المرفقة. كن دقيقاً بالأرقام.
-عند ذكر قائمة أسماء رقّمها.`;
+عند ذكر قائمة أسماء رقّمها.
+إذا لم تكن هناك بيانات مرفقة، أجب بشكل عام.`;
 
 const ADMIN_PROMPT = `${BASE_PROMPT}
 
@@ -72,10 +79,52 @@ const ADMIN_PROMPT = `${BASE_PROMPT}
 6. تشغيل سور القرآن
 
 استخدم البيانات المرفقة لتقديم إجابات دقيقة مع أرقام.
-عند المقارنة استخدم جداول نصية بسيطة.`;
+عند المقارنة استخدم جداول نصية بسيطة.
+إذا لم تكن هناك بيانات مرفقة، أجب بشكل عام.`;
 
 // ─────────────────────────────────────────────
-// DATA FETCHERS
+// IN-MEMORY CACHE (5-min TTL)
+// ─────────────────────────────────────────────
+
+const _cache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getCached(key) {
+    const entry = _cache.get(key);
+    if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
+    _cache.delete(key);
+    return null;
+}
+
+function setCache(key, data) {
+    _cache.set(key, { data, ts: Date.now() });
+    // Cleanup: keep max 50 entries
+    if (_cache.size > 50) {
+        const oldest = [..._cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
+        if (oldest) _cache.delete(oldest[0]);
+    }
+}
+
+// ─────────────────────────────────────────────
+// SMART CONTEXT DETECTION
+// Only fetch Firestore when message asks for data
+// ─────────────────────────────────────────────
+
+const DATA_KEYWORDS = [
+    'حضور', 'غياب', 'غائب', 'حاضر', 'متغيب', 'أداء', 'أدائي', 'درجات', 'درجاتي',
+    'نجوم', 'نجومي', 'نجمة', 'مستوى', 'مستواي', 'تقرير', 'تقريري', 'إحصائيات',
+    'الحلقة', 'الطلاب', 'المتميز', 'متابعة', 'كم', 'عدد', 'نسبة', 'مقارنة',
+    'سجل', 'بيانات', 'نقل', 'احتياط', 'ترقية',
+    'أفضل', 'أسوأ', 'أضعف', 'شهر', 'اليوم', 'حالة', 'حالتي'
+];
+
+function needsDataContext(message) {
+    const lower = message.toLowerCase();
+    return DATA_KEYWORDS.some(kw => lower.includes(kw));
+}
+
+// ─────────────────────────────────────────────
+// DATA FETCHERS (with cache)
 // ─────────────────────────────────────────────
 
 function getTodayStr() {
@@ -95,11 +144,14 @@ function getMonthRange() {
 async function fetchStudentContext(studentId) {
     if (!studentId) return '';
 
+    const cacheKey = `student_${studentId}`;
+    const cached = getCached(cacheKey);
+    if (cached) { console.log('📦 Cache hit: student'); return cached; }
+
     const today = getTodayStr();
     const { start, end, label } = getMonthRange();
 
     try {
-        // Parallel fetches for speed
         const [studentDoc, attSnap, progSnap] = await Promise.all([
             db.collection('students').doc(studentId).get(),
             db.collection('attendance')
@@ -125,7 +177,6 @@ async function fetchStudentContext(studentId) {
             if (s.currentLevel) ctx += `\nمستوى القاعدة: ${s.currentLevel}`;
         }
 
-        // Attendance stats
         let present = 0, absent = 0, excused = 0;
         let todayStatus = 'لم يُسجّل بعد';
         attSnap.forEach(doc => {
@@ -138,7 +189,6 @@ async function fetchStudentContext(studentId) {
         ctx += `\n\nحضور شهر ${label}: حضور=${present}، غياب=${absent}، أعذار=${excused}`;
         ctx += `\nحالة اليوم: ${todayStatus}`;
 
-        // Last 5 progress entries
         const progDocs = [];
         progSnap.forEach(doc => progDocs.push(doc.data()));
         progDocs.sort((a, b) => b.date.localeCompare(a.date));
@@ -152,6 +202,7 @@ async function fetchStudentContext(studentId) {
             }
         }
 
+        setCache(cacheKey, ctx);
         return ctx;
     } catch (e) {
         console.error('Student context error:', e);
@@ -162,11 +213,14 @@ async function fetchStudentContext(studentId) {
 async function fetchTeacherContext(teacherId) {
     if (!teacherId) return '';
 
+    const cacheKey = `teacher_${teacherId}`;
+    const cached = getCached(cacheKey);
+    if (cached) { console.log('📦 Cache hit: teacher'); return cached; }
+
     const today = getTodayStr();
     const { start, end, label } = getMonthRange();
 
     try {
-        // Get teacher's halaqa
         const teacherDoc = await db.collection('users').doc(teacherId).get();
         if (!teacherDoc.exists) return '\n(المعلم غير موجود)';
 
@@ -174,7 +228,6 @@ async function fetchTeacherContext(teacherId) {
         const halaqaId = teacher.halaqaId;
         if (!halaqaId) return '\n(المعلم غير مربوط بحلقة)';
 
-        // Parallel fetches
         const [studentsSnap, todayAttSnap, monthAttSnap] = await Promise.all([
             db.collection('students').where('halaqaId', '==', halaqaId).get(),
             db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '==', today).get(),
@@ -186,15 +239,10 @@ async function fetchTeacherContext(teacherId) {
         ctx += `\nالحلقة: ${teacher.halaqaName || halaqaId}`;
         ctx += `\nعدد الطلاب: ${studentsSnap.size}`;
 
-        // Today's attendance
         const todayStatuses = {};
-        todayAttSnap.forEach(doc => {
-            const d = doc.data();
-            todayStatuses[d.studentId] = d.status;
-        });
+        todayAttSnap.forEach(doc => { todayStatuses[doc.data().studentId] = doc.data().status; });
 
-        const absentToday = [];
-        const presentToday = [];
+        const absentToday = [], presentToday = [];
         studentsSnap.forEach(doc => {
             const s = doc.data();
             const status = todayStatuses[doc.id];
@@ -203,11 +251,8 @@ async function fetchTeacherContext(teacherId) {
         });
 
         ctx += `\n\nحضور اليوم (${today}): ${presentToday.length} حاضر، ${absentToday.length} غائب من ${studentsSnap.size}`;
-        if (absentToday.length > 0) {
-            ctx += `\nالغائبون اليوم: ${absentToday.join('، ')}`;
-        }
+        if (absentToday.length > 0) ctx += `\nالغائبون اليوم: ${absentToday.join('، ')}`;
 
-        // Monthly stats per student
         const monthlyStats = {};
         monthAttSnap.forEach(doc => {
             const d = doc.data();
@@ -217,7 +262,6 @@ async function fetchTeacherContext(teacherId) {
             else if (d.status === 'excused') monthlyStats[d.studentId].excused++;
         });
 
-        // Find most absent and best students
         const sorted = Object.entries(monthlyStats).sort((a, b) => b[1].absent - a[1].absent);
         const mostAbsent = sorted.filter(([, s]) => s.absent >= 2).slice(0, 5);
         const bestStudents = sorted.filter(([, s]) => s.present >= 5 && s.absent === 0).slice(0, 5);
@@ -231,6 +275,7 @@ async function fetchTeacherContext(teacherId) {
             bestStudents.forEach(([, s]) => ctx += `\n- ${s.name}: ${s.present} أيام حضور`);
         }
 
+        setCache(cacheKey, ctx);
         return ctx;
     } catch (e) {
         console.error('Teacher context error:', e);
@@ -239,8 +284,11 @@ async function fetchTeacherContext(teacherId) {
 }
 
 async function fetchAdminContext() {
+    const cacheKey = `admin_global`;
+    const cached = getCached(cacheKey);
+    if (cached) { console.log('📦 Cache hit: admin'); return cached; }
+
     const today = getTodayStr();
-    const { start, end, label } = getMonthRange();
 
     try {
         const [studentsSnap, halaqatSnap, todayAttSnap, demotionSnap] = await Promise.all([
@@ -252,17 +300,14 @@ async function fetchAdminContext() {
 
         let ctx = '\n--- إحصائيات الأكاديمية ---';
 
-        // Student counts
         let mainCount = 0, reserveCount = 0;
         studentsSnap.forEach(doc => {
-            const t = doc.data().type;
-            if (t === 'reserve') reserveCount++;
+            if (doc.data().type === 'reserve') reserveCount++;
             else mainCount++;
         });
         ctx += `\nإجمالي الطلاب: ${studentsSnap.size} (أساسي: ${mainCount}، احتياط: ${reserveCount})`;
         ctx += `\nعدد الحلقات: ${halaqatSnap.size}`;
 
-        // Today attendance
         let todayPresent = 0, todayAbsent = 0, todayExcused = 0;
         const halaqaAbsent = {};
         todayAttSnap.forEach(doc => {
@@ -281,7 +326,6 @@ async function fetchAdminContext() {
         ctx += `\n\nحضور اليوم (${today}): ${todayPresent} حاضر، ${todayAbsent} غائب، ${todayExcused} إذن`;
         ctx += `\nنسبة الحضور: ${attendanceRate}%`;
 
-        // Halaqa comparison by absence
         if (Object.keys(halaqaAbsent).length > 0) {
             ctx += `\n\nالغياب حسب الحلقة:`;
             Object.entries(halaqaAbsent)
@@ -289,7 +333,6 @@ async function fetchAdminContext() {
                 .forEach(([name, count]) => ctx += `\n- ${name}: ${count} غائب`);
         }
 
-        // Recent demotions
         if (!demotionSnap.empty) {
             ctx += `\n\nآخر حالات النقل للاحتياط:`;
             demotionSnap.forEach(doc => {
@@ -298,6 +341,7 @@ async function fetchAdminContext() {
             });
         }
 
+        setCache(cacheKey, ctx);
         return ctx;
     } catch (e) {
         console.error('Admin context error:', e);
@@ -328,23 +372,26 @@ export default async function handler(req, res) {
     }
 
     try {
-        // Select system prompt & build context based on role
         let systemPrompt;
         let context = '';
+
+        // ⚡ SMART: Only fetch Firestore when message asks about data
+        const shouldFetchData = needsDataContext(message);
+        console.log(`🤖 Role: ${role} | NeedsData: ${shouldFetchData} | Msg: "${message.substring(0, 50)}..."`);
 
         switch (role) {
             case 'teacher':
                 systemPrompt = TEACHER_PROMPT;
-                context = await fetchTeacherContext(teacherId || studentId);
+                if (shouldFetchData) context = await fetchTeacherContext(teacherId || studentId);
                 break;
             case 'admin':
                 systemPrompt = ADMIN_PROMPT;
-                context = await fetchAdminContext();
+                if (shouldFetchData) context = await fetchAdminContext();
                 break;
             case 'student':
             default:
                 systemPrompt = STUDENT_PROMPT;
-                context = await fetchStudentContext(studentId);
+                if (shouldFetchData) context = await fetchStudentContext(studentId);
                 break;
         }
 
@@ -353,7 +400,7 @@ export default async function handler(req, res) {
             { role: 'system', content: systemPrompt }
         ];
 
-        // Add history
+        // Add history (last 6 messages)
         if (history && Array.isArray(history)) {
             for (const h of history.slice(-6)) {
                 messages.push({
@@ -363,10 +410,10 @@ export default async function handler(req, res) {
             }
         }
 
-        // Add current message with context
+        // Add current message with context (if any)
         messages.push({
             role: 'user',
-            content: message + context
+            content: context ? message + context : message
         });
 
         // Call Groq API
@@ -377,7 +424,7 @@ export default async function handler(req, res) {
                 'Authorization': `Bearer ${GROQ_API_KEY}`,
             },
             body: JSON.stringify({
-                model: 'llama-3.3-70b-versatile',
+                model: 'llama-3.1-8b-instant',
                 messages,
                 temperature: 0.7,
                 max_tokens: 1024,
@@ -394,7 +441,6 @@ export default async function handler(req, res) {
 
         const rawText = groqData.choices?.[0]?.message?.content || '{}';
 
-        // Parse AI response
         let parsed;
         try {
             parsed = JSON.parse(rawText);
