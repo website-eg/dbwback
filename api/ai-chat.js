@@ -99,6 +99,12 @@ const PROMPTS = {
 // TOOL DEFINITIONS — Groq Function Calling Schema
 // ═══════════════════════════════════════════════
 
+const PERIOD_PARAM = {
+    type: "string",
+    enum: ["today", "week", "month", "semester", "year", "all"],
+    description: "الفترة الزمنية: today=اليوم, week=الأسبوع, month=الشهر الحالي, semester=الفصل الدراسي, year=العام الدراسي, all=كل البيانات. الافتراضي: month"
+};
+
 function getToolsForRole(role) {
     const commonTools = [
         {
@@ -119,11 +125,12 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_attendance",
-                description: "جلب سجل حضور وغياب طالب للشهر الحالي: عدد أيام الحضور، الغياب، الأعذار، حالة اليوم",
+                description: "جلب سجل حضور وغياب طالب: عدد أيام الحضور، الغياب، الأعذار، حالة اليوم. يمكن تحديد الفترة.",
                 parameters: {
                     type: "object",
                     properties: {
-                        student_id: { type: "string", description: "معرّف الطالب" }
+                        student_id: { type: "string", description: "معرّف الطالب" },
+                        period: PERIOD_PARAM
                     },
                     required: ["student_id"]
                 }
@@ -133,11 +140,12 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_scores",
-                description: "جلب درجات ومتوسطات طالب للشهر الحالي: درس، مراجعة، تلاوة، واجب + نصائح تحسين",
+                description: "جلب درجات ومتوسطات طالب: درس، مراجعة، تلاوة، واجب + نصائح تحسين. يمكن تحديد الفترة.",
                 parameters: {
                     type: "object",
                     properties: {
-                        student_id: { type: "string", description: "معرّف الطالب" }
+                        student_id: { type: "string", description: "معرّف الطالب" },
+                        period: PERIOD_PARAM
                     },
                     required: ["student_id"]
                 }
@@ -150,11 +158,12 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_halaqa_overview",
-                description: "جلب نظرة شاملة عن الحلقة: قائمة الطلاب، حضور اليوم (الحاضرين والغائبين بالأسماء)، إحصائيات الشهر، المتميزين وكثيري الغياب",
+                description: "جلب نظرة شاملة عن الحلقة: قائمة الطلاب، حضور اليوم، إحصائيات الفترة المطلوبة، المتميزين وكثيري الغياب",
                 parameters: {
                     type: "object",
                     properties: {
-                        teacher_id: { type: "string", description: "معرّف المعلم" }
+                        teacher_id: { type: "string", description: "معرّف المعلم" },
+                        period: PERIOD_PARAM
                     },
                     required: ["teacher_id"]
                 }
@@ -164,11 +173,12 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_halaqa_scores_and_behavior",
-                description: "جلب درجات طلاب الحلقة واختباراتهم وسجلات السلوك الأخيرة",
+                description: "جلب درجات طلاب الحلقة واختباراتهم وسجلات السلوك",
                 parameters: {
                     type: "object",
                     properties: {
-                        teacher_id: { type: "string", description: "معرّف المعلم" }
+                        teacher_id: { type: "string", description: "معرّف المعلم" },
+                        period: PERIOD_PARAM
                     },
                     required: ["teacher_id"]
                 }
@@ -225,7 +235,9 @@ function getToolsForRole(role) {
                 description: "جلب التنبيهات والمشاكل: حلقات لم تحضّر، طلاب كثيري الغياب، أداء منخفض، حالات نقل",
                 parameters: {
                     type: "object",
-                    properties: {},
+                    properties: {
+                        period: PERIOD_PARAM
+                    },
                     required: []
                 }
             }
@@ -234,10 +246,27 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_academy_exams_and_behavior",
-                description: "جلب ملخص اختبارات الشهر وسجلات السلوك لكل الأكاديمية",
+                description: "جلب ملخص اختبارات وسجلات السلوك لكل الأكاديمية",
                 parameters: {
                     type: "object",
-                    properties: {},
+                    properties: {
+                        period: PERIOD_PARAM
+                    },
+                    required: []
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_top_absent_students",
+                description: "ترتيب أكثر الطلاب غياباً في الأكاديمية كلها. ممكن على مستوى الشهر أو الفصل أو العام الدراسي أو كل الفترات.",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        period: PERIOD_PARAM,
+                        limit: { type: "integer", description: "عدد النتائج المطلوبة (الافتراضي 10)" }
+                    },
                     required: []
                 }
             }
@@ -260,13 +289,68 @@ function getTodayStr() {
 }
 
 function getMonthRange() {
+    return getDateRange('month');
+}
+
+// Flexible date range based on period
+function getDateRange(period) {
     const now = new Date();
     const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const start = `${year}-${month}-01`;
-    const endDate = new Date(year, now.getMonth() + 1, 0);
-    const end = `${year}-${month}-${String(endDate.getDate()).padStart(2, '0')}`;
-    return { start, end, label: `${month}/${year}` };
+    const month = now.getMonth();
+    const today = getTodayStr();
+
+    switch (period) {
+        case 'today':
+            return { start: today, end: today, label: 'اليوم' };
+
+        case 'week': {
+            const weekAgo = new Date(now);
+            weekAgo.setDate(weekAgo.getDate() - 7);
+            return {
+                start: weekAgo.toLocaleDateString('en-CA', { timeZone: 'Africa/Cairo' }),
+                end: today,
+                label: 'الأسبوع'
+            };
+        }
+
+        case 'month': {
+            const m = String(month + 1).padStart(2, '0');
+            const endDate = new Date(year, month + 1, 0);
+            return {
+                start: `${year}-${m}-01`,
+                end: `${year}-${m}-${String(endDate.getDate()).padStart(2, '0')}`,
+                label: `${m}/${year}`
+            };
+        }
+
+        case 'semester': {
+            // Academic semester: Sep-Jan or Feb-Jun
+            const semStart = month >= 8 ? new Date(year, 8, 1) : new Date(year, 1, 1);
+            const semEnd = month >= 8 ? new Date(year + 1, 0, 31) : new Date(year, 5, 30);
+            return {
+                start: semStart.toLocaleDateString('en-CA'),
+                end: semEnd.toLocaleDateString('en-CA'),
+                label: month >= 8 ? 'الفصل الأول' : 'الفصل الثاني'
+            };
+        }
+
+        case 'year': {
+            // Academic year: Sep to Jun
+            const acStart = month >= 8 ? new Date(year, 8, 1) : new Date(year - 1, 8, 1);
+            const acEnd = month >= 8 ? new Date(year + 1, 5, 30) : new Date(year, 5, 30);
+            return {
+                start: acStart.toLocaleDateString('en-CA'),
+                end: acEnd.toLocaleDateString('en-CA'),
+                label: month >= 8 ? `${year}/${year + 1}` : `${year - 1}/${year}`
+            };
+        }
+
+        case 'all':
+            return { start: '2020-01-01', end: '2099-12-31', label: 'كل الفترات' };
+
+        default:
+            return getDateRange('month');
+    }
 }
 
 // ─── In-Memory Cache ───
@@ -314,13 +398,13 @@ async function tool_get_student_info({ student_id }) {
 }
 
 // ─── Tool: get_attendance ───
-async function tool_get_attendance({ student_id }) {
-    const ck = `att_${student_id}`;
+async function tool_get_attendance({ student_id, period = 'month' }) {
+    const ck = `att_${student_id}_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
     const today = getTodayStr();
-    const { start, end, label } = getMonthRange();
+    const { start, end, label } = getDateRange(period);
 
     try {
         const snap = await db.collection('attendance')
@@ -346,7 +430,7 @@ async function tool_get_attendance({ student_id }) {
         const rate = total > 0 ? Math.round((present / total) * 100) : 0;
 
         const result = JSON.stringify({
-            month: label,
+            period: label,
             present, absent, excused,
             total_days: total,
             attendance_rate: `${rate}%`,
@@ -360,12 +444,12 @@ async function tool_get_attendance({ student_id }) {
 }
 
 // ─── Tool: get_scores ───
-async function tool_get_scores({ student_id }) {
-    const ck = `scores_${student_id}`;
+async function tool_get_scores({ student_id, period = 'month' }) {
+    const ck = `scores_${student_id}_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
-    const { start, end, label } = getMonthRange();
+    const { start, end, label } = getDateRange(period);
 
     try {
         const snap = await db.collection('progress')
@@ -379,7 +463,7 @@ async function tool_get_scores({ student_id }) {
         docs.sort((a, b) => b.date.localeCompare(a.date));
 
         if (docs.length === 0) {
-            return JSON.stringify({ message: "لا توجد درجات مسجلة هذا الشهر" });
+            return JSON.stringify({ message: `لا توجد درجات مسجلة في فترة ${label}` });
         }
 
         let sumL = 0, sumR = 0, sumT = 0, sumH = 0;
@@ -416,7 +500,7 @@ async function tool_get_scores({ student_id }) {
         }));
 
         const result = JSON.stringify({
-            month: label,
+            period: label,
             sessions: n,
             averages: { lesson: avgL, revision: avgR, tilawa: avgT, homework: avgH, total: avgTotal, max: 40 },
             last_sessions: last3,
@@ -430,13 +514,13 @@ async function tool_get_scores({ student_id }) {
 }
 
 // ─── Tool: get_halaqa_overview ───
-async function tool_get_halaqa_overview({ teacher_id }) {
-    const ck = `halaqa_${teacher_id}`;
+async function tool_get_halaqa_overview({ teacher_id, period = 'month' }) {
+    const ck = `halaqa_${teacher_id}_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
     const today = getTodayStr();
-    const { start, end, label } = getMonthRange();
+    const { start, end, label } = getDateRange(period);
 
     try {
         const teacherDoc = await db.collection('users').doc(teacher_id).get();
@@ -468,17 +552,17 @@ async function tool_get_halaqa_overview({ teacher_id }) {
             else notRecorded.push(name);
         });
 
-        // Monthly
-        const monthly = {};
+        // Period stats
+        const periodStats = {};
         monthAttSnap.forEach(doc => {
             const d = doc.data();
             if (!studentMap[d.studentId]) return;
-            if (!monthly[d.studentId]) monthly[d.studentId] = { name: studentMap[d.studentId], present: 0, absent: 0 };
-            if (d.status === 'present' || d.status === 'sard') monthly[d.studentId].present++;
-            else if (d.status === 'absent') monthly[d.studentId].absent++;
+            if (!periodStats[d.studentId]) periodStats[d.studentId] = { name: studentMap[d.studentId], present: 0, absent: 0 };
+            if (d.status === 'present' || d.status === 'sard') periodStats[d.studentId].present++;
+            else if (d.status === 'absent') periodStats[d.studentId].absent++;
         });
 
-        const sorted = Object.values(monthly).sort((a, b) => b.absent - a.absent);
+        const sorted = Object.values(periodStats).sort((a, b) => b.absent - a.absent);
         const mostAbsent = sorted.filter(s => s.absent >= 2).slice(0, 5).map(s => `${s.name} (${s.absent} أيام)`);
         const bestStudents = sorted.filter(s => s.present >= 5 && s.absent === 0).slice(0, 5).map(s => s.name);
 
@@ -493,7 +577,7 @@ async function tool_get_halaqa_overview({ teacher_id }) {
                 not_recorded: notRecorded,
                 attendance_recorded: notRecorded.length === 0,
             },
-            month: {
+            period_stats: {
                 label,
                 most_absent: mostAbsent,
                 best_students: bestStudents,
@@ -507,12 +591,12 @@ async function tool_get_halaqa_overview({ teacher_id }) {
 }
 
 // ─── Tool: get_halaqa_scores_and_behavior ───
-async function tool_get_halaqa_scores_and_behavior({ teacher_id }) {
-    const ck = `halaqa_sb_${teacher_id}`;
+async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month' }) {
+    const ck = `halaqa_sb_${teacher_id}_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
-    const { start, end, label } = getMonthRange();
+    const { start, end, label } = getDateRange(period);
 
     try {
         const teacherDoc = await db.collection('users').doc(teacher_id).get();
@@ -574,7 +658,7 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id }) {
         });
 
         const result = JSON.stringify({
-            month: label,
+            period: label,
             latest_scores: scores,
             exams: exams.slice(0, 8),
             recent_behavior: behaviors.slice(0, 5),
@@ -613,7 +697,7 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
         if (!found) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}" في الحلقة` });
 
         // Get attendance + scores for this student
-        const { start, end } = getMonthRange();
+        const { start, end } = getDateRange('year');
         const today = getTodayStr();
 
         const [attSnap, progSnap] = await Promise.all([
@@ -682,8 +766,8 @@ async function tool_get_smart_alerts({ teacher_id }) {
         }
 
         // Frequent absences
-        if (overview.month.most_absent.length > 0) {
-            overview.month.most_absent.forEach(s => {
+        if (overview.period_stats.most_absent.length > 0) {
+            overview.period_stats.most_absent.forEach(s => {
                 alerts.push({ level: "🔴", message: `${s} — يحتاج متابعة` });
             });
         }
@@ -763,12 +847,12 @@ async function tool_get_academy_overview() {
 }
 
 // ─── Tool: get_academy_alerts (Admin) ───
-async function tool_get_academy_alerts() {
-    const ck = `academy_alerts`;
+async function tool_get_academy_alerts({ period = 'month' } = {}) {
+    const ck = `academy_alerts_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
-    const { start, end } = getMonthRange();
+    const { start, end } = getDateRange(period);
 
     try {
         const [overview, monthAttSnap, demotionSnap] = await Promise.all([
@@ -874,6 +958,60 @@ async function tool_get_academy_exams_and_behavior() {
     }
 }
 
+// ─── Tool: get_top_absent_students (Admin) ───
+async function tool_get_top_absent_students({ period = 'year', limit = 10 } = {}) {
+    const ck = `top_absent_${period}_${limit}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    const { start, end, label } = getDateRange(period);
+
+    try {
+        const [studentsSnap, attSnap] = await Promise.all([
+            db.collection('students').get(),
+            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
+        ]);
+
+        const studentMap = {};
+        const studentHalaqa = {};
+        studentsSnap.forEach(doc => {
+            const d = doc.data();
+            studentMap[doc.id] = d.fullName || d.name || '?';
+            studentHalaqa[doc.id] = d.halaqaName || 'غير محدد';
+        });
+
+        const absCount = {};
+        const totalCount = {};
+        attSnap.forEach(doc => {
+            const d = doc.data();
+            totalCount[d.studentId] = (totalCount[d.studentId] || 0) + 1;
+            if (d.status === 'absent') absCount[d.studentId] = (absCount[d.studentId] || 0) + 1;
+        });
+
+        const ranked = Object.entries(absCount)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, limit)
+            .map(([sid, count], i) => ({
+                rank: i + 1,
+                name: studentMap[sid] || '?',
+                halaqa: studentHalaqa[sid] || '?',
+                absent_days: count,
+                total_days: totalCount[sid] || count,
+                absence_rate: `${Math.round((count / (totalCount[sid] || 1)) * 100)}%`,
+            }));
+
+        const result = JSON.stringify({
+            period: label,
+            total_students_with_absence: Object.keys(absCount).length,
+            top_absent: ranked,
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب ترتيب الغياب" });
+    }
+}
+
 // ─── Tool Router ───
 const TOOL_HANDLERS = {
     get_student_info: tool_get_student_info,
@@ -886,6 +1024,7 @@ const TOOL_HANDLERS = {
     get_academy_overview: tool_get_academy_overview,
     get_academy_alerts: tool_get_academy_alerts,
     get_academy_exams_and_behavior: tool_get_academy_exams_and_behavior,
+    get_top_absent_students: tool_get_top_absent_students,
 };
 
 // ═══════════════════════════════════════════════
