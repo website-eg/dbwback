@@ -1051,7 +1051,7 @@ const TOOL_HANDLERS = {
 
 async function callGroq(messages, tools, maxRetries = 2) {
     const body = {
-        model: 'llama-3.3-70b-versatile',
+        model: 'meta-llama/llama-4-scout-17b-16e-instruct',
         messages,
         temperature: 0.4,
         max_tokens: 1024,
@@ -1065,7 +1065,7 @@ async function callGroq(messages, tools, maxRetries = 2) {
     }
 
     const totalKeys = GROQ_API_KEYS.length;
-    const maxKeyAttempts = Math.min(totalKeys, 5); // try up to 5 different keys on rate limit
+    const maxKeyAttempts = totalKeys; // try ALL keys if needed
 
     for (let keyAttempt = 0; keyAttempt < maxKeyAttempts; keyAttempt++) {
         const apiKey = getNextKey();
@@ -1086,9 +1086,9 @@ async function callGroq(messages, tools, maxRetries = 2) {
 
                 if (res.ok) return { success: true, data };
 
-                // Rate limit → try next key immediately
-                if (res.status === 429 && totalKeys > 1) {
-                    console.warn(`⚡ Key #${(_keyIndex - 1) % totalKeys + 1} rate limited, switching to next key...`);
+                // Rate limit OR model blocked/forbidden → try next key immediately
+                if ((res.status === 429 || res.status === 403) && totalKeys > 1) {
+                    console.warn(`⚡ Key #${(_keyIndex - 1) % totalKeys + 1} error ${res.status}, switching to next key...`);
                     break; // break inner retry loop → go to next key
                 }
 
@@ -1112,7 +1112,7 @@ async function callGroq(messages, tools, maxRetries = 2) {
             }
         }
     }
-    return { success: false, error: 'All API keys exhausted (rate limited)' };
+    return { success: false, error: 'All API keys exhausted' };
 }
 
 // ═══════════════════════════════════════════════
