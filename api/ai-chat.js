@@ -237,10 +237,12 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_academy_overview",
-                description: "جلب إحصائيات الأكاديمية الشاملة: عدد الطلاب، الحلقات، نسبة الحضور اليوم، مقارنة الحلقات",
+                description: "جلب إحصائيات الأكاديمية الشاملة: عدد الطلاب، الحلقات، نسبة الحضور، مقارنة الحلقات. يمكن تحديد تاريخ معين.",
                 parameters: {
                     type: "object",
-                    properties: {},
+                    properties: {
+                        date: { type: "string", description: "التاريخ بصيغة YYYY-MM-DD أو yesterday أو today. الافتراضي: today" }
+                    },
                     required: []
                 }
             }
@@ -303,6 +305,23 @@ function getToolsForRole(role) {
 
 function getTodayStr() {
     return new Date().toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+}
+
+function getDateStr(dateInput) {
+    // If no input or 'today', return today
+    if (!dateInput || dateInput === 'today') return getTodayStr();
+    // If 'yesterday'
+    if (dateInput === 'yesterday') {
+        const d = new Date();
+        d.setDate(d.getDate() - 1);
+        return d.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+    }
+    // If already YYYY-MM-DD format
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return dateInput;
+    // Try to parse
+    const parsed = new Date(dateInput);
+    if (!isNaN(parsed)) return parsed.toLocaleDateString("en-CA");
+    return getTodayStr();
 }
 
 function getMonthRange() {
@@ -802,18 +821,17 @@ async function tool_get_smart_alerts({ teacher_id }) {
 }
 
 // ─── Tool: get_academy_overview (Admin) ───
-async function tool_get_academy_overview() {
-    const ck = `academy_overview`;
+async function tool_get_academy_overview({ date } = {}) {
+    const targetDate = getDateStr(date);
+    const ck = `academy_overview_${targetDate}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
-    const today = getTodayStr();
-
     try {
-        const [studentsSnap, halaqatSnap, todayAttSnap] = await Promise.all([
+        const [studentsSnap, halaqatSnap, attSnap] = await Promise.all([
             db.collection('students').get(),
             db.collection('halaqat').get(),
-            db.collection('attendance').where('date', '==', today).get(),
+            db.collection('attendance').where('date', '==', targetDate).get(),
         ]);
 
         let mainCount = 0, reserveCount = 0;
@@ -829,7 +847,7 @@ async function tool_get_academy_overview() {
         const halaqaToday = {};
         const recordedHalaqas = new Set();
 
-        todayAttSnap.forEach(doc => {
+        attSnap.forEach(doc => {
             const d = doc.data();
             const hName = d.halaqaName || 'غير محدد';
             recordedHalaqas.add(d.halaqaId || hName);
@@ -850,9 +868,10 @@ async function tool_get_academy_overview() {
         }).sort((a, b) => parseInt(b.rate) - parseInt(a.rate));
 
         const result = JSON.stringify({
+            date: targetDate,
             students: { total: studentsSnap.size, main: mainCount, reserve: reserveCount },
             halaqat: { total: halaqatSnap.size, names: Object.values(halaqaNames) },
-            today_attendance: { present: todayPresent, absent: todayAbsent, excused: todayExcused, rate: `${rate}%` },
+            attendance: { present: todayPresent, absent: todayAbsent, excused: todayExcused, rate: `${rate}%` },
             halaqa_comparison: halaqaComparison,
             unrecorded_halaqat: unrecorded,
         });
