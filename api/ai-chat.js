@@ -26,7 +26,25 @@ if (!admin.apps.length) {
 }
 
 const db = admin.firestore();
-const GROQ_API_KEY = process.env.GROQ_API_KEY;
+
+// ─── API Key Rotation (supports up to 20 keys) ───
+const GROQ_API_KEYS = [];
+for (let i = 1; i <= 20; i++) {
+    const key = process.env[`GROQ_API_KEY_${i}`];
+    if (key) GROQ_API_KEYS.push(key);
+}
+// Fallback to single key if no numbered keys found
+if (GROQ_API_KEYS.length === 0 && process.env.GROQ_API_KEY) {
+    GROQ_API_KEYS.push(process.env.GROQ_API_KEY);
+}
+let _keyIndex = 0;
+function getNextKey() {
+    if (GROQ_API_KEYS.length === 0) return null;
+    const key = GROQ_API_KEYS[_keyIndex % GROQ_API_KEYS.length];
+    _keyIndex++;
+    return key;
+}
+console.log(`🔑 Loaded ${GROQ_API_KEYS.length} Groq API keys`);
 
 // ═══════════════════════════════════════════════
 // SYSTEM PROMPTS — Clean, no data logic needed
@@ -264,7 +282,7 @@ function getToolsForRole(role) {
                     type: "object",
                     properties: {
                         period: PERIOD_PARAM,
-                        limit: { type: "integer", description: "عدد النتائج المطلوبة (الافتراضي 10)" }
+                        limit: { type: "string", description: "عدد النتائج المطلوبة (الافتراضي 10)" }
                     },
                     required: []
                 }
@@ -958,8 +976,9 @@ async function tool_get_academy_exams_and_behavior() {
 }
 
 // ─── Tool: get_top_absent_students (Admin) ───
-async function tool_get_top_absent_students({ period = 'year', limit = 10 } = {}) {
-    const ck = `top_absent_${period}_${limit}`;
+async function tool_get_top_absent_students({ period = 'year', limit = '10' } = {}) {
+    const parsedLimit = parseInt(limit) || 10;
+    const ck = `top_absent_${period}_${parsedLimit}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
@@ -989,7 +1008,7 @@ async function tool_get_top_absent_students({ period = 'year', limit = 10 } = {}
 
         const ranked = Object.entries(absCount)
             .sort((a, b) => b[1] - a[1])
-            .slice(0, limit)
+            .slice(0, parsedLimit)
             .map(([sid, count], i) => ({
                 rank: i + 1,
                 name: studentMap[sid] || '?',
@@ -1045,38 +1064,55 @@ async function callGroq(messages, tools, maxRetries = 2) {
         body.response_format = { type: 'json_object' };
     }
 
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-            const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${GROQ_API_KEY}`,
-                },
-                body: JSON.stringify(body),
-            });
+    const totalKeys = GROQ_API_KEYS.length;
+    const maxKeyAttempts = Math.min(totalKeys, 5); // try up to 5 different keys on rate limit
 
-            const data = await res.json();
+    for (let keyAttempt = 0; keyAttempt < maxKeyAttempts; keyAttempt++) {
+        const apiKey = getNextKey();
+        if (!apiKey) return { success: false, error: 'No API keys configured' };
 
-            if (res.ok) return { success: true, data };
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
+                const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${apiKey}`,
+                    },
+                    body: JSON.stringify(body),
+                });
 
-            if ((res.status === 429 || res.status >= 500) && attempt < maxRetries) {
-                const wait = Math.pow(2, attempt + 1) * 1000;
-                console.warn(`⏳ Groq ${res.status}, retry in ${wait}ms...`);
-                await new Promise(r => setTimeout(r, wait));
-                continue;
+                const data = await res.json();
+
+                if (res.ok) return { success: true, data };
+
+                // Rate limit → try next key immediately
+                if (res.status === 429 && totalKeys > 1) {
+                    console.warn(`⚡ Key #${(_keyIndex - 1) % totalKeys + 1} rate limited, switching to next key...`);
+                    break; // break inner retry loop → go to next key
+                }
+
+                // Server error → retry same key
+                if (res.status >= 500 && attempt < maxRetries) {
+                    const wait = Math.pow(2, attempt + 1) * 1000;
+                    console.warn(`⏳ Groq ${res.status}, retry in ${wait}ms...`);
+                    await new Promise(r => setTimeout(r, wait));
+                    continue;
+                }
+
+                return { success: false, error: data.error?.message || JSON.stringify(data.error) || `HTTP ${res.status}` };
+            } catch (err) {
+                if (attempt < maxRetries) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    continue;
+                }
+                // Network error → try next key
+                if (totalKeys > 1 && keyAttempt < maxKeyAttempts - 1) break;
+                return { success: false, error: err.message };
             }
-
-            return { success: false, error: data.error?.message || JSON.stringify(data.error) || `HTTP ${res.status}` };
-        } catch (err) {
-            if (attempt < maxRetries) {
-                await new Promise(r => setTimeout(r, 2000));
-                continue;
-            }
-            return { success: false, error: err.message };
         }
     }
-    return { success: false, error: 'Max retries exceeded' };
+    return { success: false, error: 'All API keys exhausted (rate limited)' };
 }
 
 // ═══════════════════════════════════════════════
