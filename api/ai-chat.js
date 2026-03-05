@@ -101,8 +101,7 @@ const PROMPTS = {
 
 const PERIOD_PARAM = {
     type: "string",
-    enum: ["today", "week", "month", "semester", "year", "all"],
-    description: "الفترة الزمنية: today=اليوم, week=الأسبوع, month=الشهر الحالي, semester=الفصل الدراسي, year=العام الدراسي, all=كل البيانات. الافتراضي: month"
+    description: "الفترة الزمنية. القيم الممكنة: today (اليوم), week (الأسبوع), month (الشهر), semester (الفصل), year (العام الدراسي), all (كل البيانات). الافتراضي: month"
 };
 
 function getToolsForRole(role) {
@@ -1068,7 +1067,7 @@ async function callGroq(messages, tools, maxRetries = 2) {
                 continue;
             }
 
-            return { success: false, error: data.error?.message || `HTTP ${res.status}` };
+            return { success: false, error: data.error?.message || JSON.stringify(data.error) || `HTTP ${res.status}` };
         } catch (err) {
             if (attempt < maxRetries) {
                 await new Promise(r => setTimeout(r, 2000));
