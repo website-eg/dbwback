@@ -1016,14 +1016,16 @@ export default async function handler(req, res) {
                     let toolResult;
                     if (handler_fn) {
                         let args = {};
-                        try { args = JSON.parse(fn.arguments || '{}'); } catch { args = {}; }
+                        try { args = JSON.parse(fn.arguments || '{}') || {}; } catch { args = {}; }
 
-                        // Auto-inject IDs that the AI might not have
-                        if (fn.name.includes('student') && !args.student_id && studentId) args.student_id = studentId;
-                        if (fn.name.includes('attendance') && !args.student_id && studentId) args.student_id = studentId;
-                        if (fn.name.includes('scores') && !args.student_id && studentId) args.student_id = studentId;
-                        if (fn.name.includes('halaqa') && !args.teacher_id && (teacherId || studentId)) args.teacher_id = teacherId || studentId;
-                        if (fn.name.includes('alert') && args.teacher_id === undefined && (teacherId || studentId)) args.teacher_id = teacherId || studentId;
+                        // Auto-inject IDs the AI might not have (only for non-academy tools)
+                        if (!fn.name.startsWith('get_academy')) {
+                            if (fn.name.includes('student') && !args.student_id && studentId) args.student_id = studentId;
+                            if (fn.name.includes('attendance') && !args.student_id && studentId) args.student_id = studentId;
+                            if (fn.name.includes('scores') && !args.student_id && studentId) args.student_id = studentId;
+                            if (fn.name.includes('halaqa') && !args.teacher_id && (teacherId || studentId)) args.teacher_id = teacherId || studentId;
+                            if (fn.name.includes('alert') && !args.teacher_id && (teacherId || studentId)) args.teacher_id = teacherId || studentId;
+                        }
 
                         toolResult = await handler_fn(args);
                     } else {
