@@ -1015,7 +1015,7 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
         }
 
         const searchLower = student_name.toLowerCase().trim();
-        const searchWords = searchLower.split(/\s+/);
+        const searchWords = searchLower.split(/\s+/).filter(w => w.length > 1);
         const isNumeric = /^\d+$/.test(searchLower);
         const matches = [];
 
@@ -1024,23 +1024,26 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
             const name = (d.fullName || d.name || '').toLowerCase();
             const nationalId = (d.nationalId || '').toLowerCase();
             const phone = (d.parentPhone || '').toLowerCase();
+            const code = (d.code || '').toLowerCase();
             const docId = doc.id.toLowerCase();
             const birthDate = (d.birthDate || '').toLowerCase();
 
             let matched = false;
 
             // Match by exact document ID
-            if (docId === searchLower || docId.includes(searchLower)) matched = true;
-            // Match by national ID
-            else if (isNumeric && nationalId.includes(searchLower)) matched = true;
-            // Match by phone
-            else if (isNumeric && phone.includes(searchLower)) matched = true;
+            if (docId === searchLower) matched = true;
+            // Match by student code
+            else if (code && (code === searchLower || code.includes(searchLower))) matched = true;
+            // Match by national ID (numeric search)
+            else if (isNumeric && nationalId && nationalId.includes(searchLower)) matched = true;
+            // Match by phone (numeric search)
+            else if (isNumeric && phone && phone.includes(searchLower)) matched = true;
             // Match by birthdate
-            else if (birthDate.includes(searchLower)) matched = true;
-            // Match by name (full or partial)
+            else if (birthDate && birthDate.includes(searchLower)) matched = true;
+            // Match by full name (exact or contains full search)
             else if (name.includes(searchLower)) matched = true;
-            // Match by any word in name
-            else if (searchWords.some(w => w.length > 2 && name.includes(w))) matched = true;
+            // Match by ALL words (every word must appear in name)
+            else if (searchWords.length >= 2 && searchWords.every(w => name.includes(w))) matched = true;
 
             if (matched) {
                 matches.push({ data: d, id: doc.id });
@@ -1942,7 +1945,7 @@ async function tool_get_student_management_info({ student_name }) {
     try {
         const studentsSnap = await db.collection('students').get();
         const searchLower = student_name.toLowerCase().trim();
-        const searchWords = searchLower.split(/\s+/);
+        const searchWords = searchLower.split(/\s+/).filter(w => w.length > 1);
         const isNumeric = /^\d+$/.test(searchLower);
 
         const matches = [];
@@ -1951,17 +1954,19 @@ async function tool_get_student_management_info({ student_name }) {
             const name = (d.fullName || d.name || '').toLowerCase();
             const nationalId = (d.nationalId || '').toLowerCase();
             const phone = (d.parentPhone || '').toLowerCase();
+            const code = (d.code || '').toLowerCase();
             const docId = doc.id.toLowerCase();
             const birthDate = (d.birthDate || '').toLowerCase();
 
             let matched = false;
 
-            if (docId === searchLower || docId.includes(searchLower)) matched = true;
-            else if (isNumeric && nationalId.includes(searchLower)) matched = true;
-            else if (isNumeric && phone.includes(searchLower)) matched = true;
-            else if (birthDate.includes(searchLower)) matched = true;
+            if (docId === searchLower) matched = true;
+            else if (code && (code === searchLower || code.includes(searchLower))) matched = true;
+            else if (isNumeric && nationalId && nationalId.includes(searchLower)) matched = true;
+            else if (isNumeric && phone && phone.includes(searchLower)) matched = true;
+            else if (birthDate && birthDate.includes(searchLower)) matched = true;
             else if (name.includes(searchLower)) matched = true;
-            else if (searchWords.some(w => w.length > 2 && name.includes(w))) matched = true;
+            else if (searchWords.length >= 2 && searchWords.every(w => name.includes(w))) matched = true;
 
             if (matched) {
                 matches.push({ data: d, id: doc.id });
