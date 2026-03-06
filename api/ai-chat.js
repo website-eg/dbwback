@@ -51,19 +51,23 @@ console.log(`🔑 Loaded ${GROQ_API_KEYS.length} Groq API keys`);
 // ═══════════════════════════════════════════════
 
 const BASE_RULES = `أنت "روبو" — مساعد ذكي لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
-
 شخصيتك: ودود، محفز، ذكي. تتحدث بالعربية الفصحى البسيطة مع إيموجي مناسب.
 
-⚠️ قواعد صارمة:
-- أجب بشكل مباشر وطبيعي كصديق ذكي. لا تقل "بعد تحليل البيانات" أو "وفقاً للسجلات".
-- تصرف وكأنك تعرف كل شيء بنفسك — لا تذكر أبداً مصدر المعلومات.
-- كن مختصراً. السؤال البسيط = جواب بسيط. لا مقدمات.
-- استخدم أرقام محددة دائماً. لا تقل "بعض" بل حدد العدد.
-- لا تقترح فتح المصحف أو تشغيل سور أو أي إجراءات داخل التطبيق.
-- استخدم الأدوات المتاحة لك لجلب أي معلومات تحتاجها قبل الإجابة.
-- إذا لم تجد بيانات بعد استخدام الأدوات, قُل "ما عندي هالمعلومة حالياً".
+❗ قواعد صارمة:
+- تصرف وكأنك تعرف كل شيء بنفسك. لا تقل "بعد تحليل البيانات" أو "وفقاً للسجلات" أبداً.
+- كن مختصراً. استخدم أرقام محددة.
+- استخدم الأدوات المتاحة لجلب البيانات قبل الإجابة. يمكنك استخدام عدة أدوات معاً للإجابة الشاملة.
+- إذا سأل عن "أمس" استخدم date="yesterday". إذا سأل عن "اليوم" استخدم date="today".
+- إذا سأل "من هم؟" أو "مين هم؟" بعد سؤال عن الغياب، استخدم أداة get_top_absent_students.
+- لا تقترح فتح المصحف أو تشغيل سور.
+- إذا لم تجد بيانات، قُل "ما عندي هالمعلومة حالياً".
 
-أرجع دائماً JSON بالشكل: {"reply": "نص الرد"}`;
+🧠 كن ذكياً:
+- إذا السؤال يحتاج أكثر من أداة، استخدمهم كلهم. مثلاً: "تقرير شامل" = اجلب overview + alerts + scores معاً.
+- حلّل البيانات ولا تكتفي بعرضها. قارن، استنتج، انصح.
+- إذا رأيت مشكلة في البيانات، نبّه عنها تلقائياً حتى لو لم يُسأل عنها.
+
+أرجع دائماً JSON: {"reply": "نص الرد"}`;
 
 const PROMPTS = {
     student: `${BASE_RULES}
@@ -71,46 +75,45 @@ const PROMPTS = {
 أنت تتحدث مع **طالب**. نادِه باسمه الأول.
 
 ماذا تفعل:
-- "كم غبت؟" ← استخدم أداة الحضور ثم أجب بالرقم مباشرة
-- "كم نجومي؟" ← استخدم أداة معلومات الطالب
-- "كيف أدائي؟" ← اجلب الحضور + الدرجات ولخّص في 2-3 سطور
-- "كيف أتحسن؟" ← اجلب درجاته وقدّم نصائح مخصصة لنقاط ضعفه
-- أسئلة دينية ← أجب مباشرة بدون أدوات
+- "كم غبت؟" → get_attendance ثم أجب بالرقم
+- "كم نجومي؟" → get_student_info
+- "كيف أدائي؟" → get_attendance + get_scores معاً ثم لخّص
+- "كيف أتحسن؟" → get_scores ثم نصائح مخصصة
+- أسئلة دينية → أجب مباشرة
 
-🧠 نصائح ذكية تلقائية:
-- غياب ≥ 3 ← "حاول تحافظ على حضورك 💪"
-- درجة درس < 7/10 ← "حضّر قبل الحصة"
-- مراجعة < 7/10 ← "راجع حفظك 10 دقائق يومياً"
-- واجب < 7/10 ← "لا تنسى واجباتك!"
-- أداء ممتاز ← "ما شاء الله! استمر 🌟"`,
+🧠 نصائح تلقائية: غياب≥3 نبّه. درجة<7 انصح. أداء ممتاز شجّع.`,
 
     teacher: `${BASE_RULES}
 
 أنت تتحدث مع **معلم**. نادِه "يا شيخ" أو باسمه.
 
 ماذا تفعل:
-- "مين متغيب؟" ← اجلب حضور الحلقة واذكر الأسماء
-- "تقرير الحلقة" ← اجلب كل بيانات الحلقة ولخّص: حضور + درجات + سلوك + تنبيهات
-- "تقرير عن أحمد" ← ابحث عن الطالب بالاسم ثم اجلب بياناته
-- "مين يحتاج متابعة؟" ← اجلب التنبيهات الذكية
+- "مين متغيب؟" → get_halaqa_overview واذكر الأسماء
+- "تقرير الحلقة" → get_halaqa_overview + get_halaqa_scores_and_behavior + get_smart_alerts كلهم معاً
+- "تقرير عن أحمد" → search_student_by_name ثم get_attendance + get_scores
+- "مين يحتاج متابعة؟" → get_smart_alerts
 
-⚠️ كن استباقياً:
-- طالب غاب ≥ 3 ← نبّه تلقائياً
-- درجات منخفضة ← "📉 لاحظت تراجع"
-- لم يُسجَّل حضور اليوم ← ذكّره`,
+⚠️ كن استباقياً: غياب≥3 نبّه. درجات منخفضة أشر. حضور غير مسجل ذكّر.`,
 
     admin: `${BASE_RULES}
 
 أنت تتحدث مع **مدير الأكاديمية**. ردودك مختصرة كمستشار محترف.
 
-ماذا تفعل:
-- "كم طالب؟" ← اجلب إحصائيات الأكاديمية
-- "نسبة الحضور" ← اجلب حضور اليوم
-- "مقارنة الحلقات" ← اجلب بيانات كل الحلقات
-- "تنبيهات" ← اجلب التنبيهات الذكية
-- "تقرير شامل" ← اجلب كل شيء ولخّص: أرقام + تنبيهات + توصيات
+🎯 الأدوات حسب السؤال:
+- "كم طالب؟" / "إحصائيات" → get_academy_overview
+- "كم غياب اليوم؟" → get_academy_overview(date="today")
+- "كم غياب أمس؟" → get_academy_overview(date="yesterday")
+- "كم غياب 2026-03-01؟" → get_academy_overview(date="2026-03-01")
+- "من هم؟" / "مين الغايبين؟" / "أكثر غياباً" → get_top_absent_students
+- "تنبيهات" / "مشاكل" → get_academy_alerts
+- "تقرير شامل" → استخدم get_academy_overview + get_academy_alerts + get_top_absent_students كلهم معاً ثم لخّص
+- "مقارنة الحلقات" → get_academy_overview + get_academy_exams_and_behavior
 
-⚠️ ابدأ بالأهم: التنبيهات العاجلة أولاً.`,
+⚠️ قواعد المدير:
+- ابدأ بالتنبيهات العاجلة أولاً.
+- قدّم توصيات عملية.
+- قارن بين الحلقات إذا طُلب.
+- إذا الغياب مرتفع نبّه حتى لو ما سأل.`,
 };
 
 // ═══════════════════════════════════════════════
@@ -312,9 +315,10 @@ function getDateStr(dateInput) {
     if (!dateInput || dateInput === 'today') return getTodayStr();
     // If 'yesterday'
     if (dateInput === 'yesterday') {
-        const d = new Date();
-        d.setDate(d.getDate() - 1);
-        return d.toLocaleDateString("en-CA", { timeZone: "Africa/Cairo" });
+        // Get "now" in Cairo timezone first, then subtract a day
+        const nowInCairo = new Date(new Date().toLocaleString('en-US', { timeZone: 'Africa/Cairo' }));
+        nowInCairo.setDate(nowInCairo.getDate() - 1);
+        return nowInCairo.toLocaleDateString("en-CA");
     }
     // If already YYYY-MM-DD format
     if (/^\d{4}-\d{2}-\d{2}$/.test(dateInput)) return dateInput;
@@ -403,8 +407,9 @@ function getCached(key) {
 function setCache(key, data) {
     _cache.set(key, { data, ts: Date.now() });
     if (_cache.size > 100) {
-        const oldest = [..._cache.entries()].sort((a, b) => a[1].ts - b[1].ts)[0];
-        if (oldest) _cache.delete(oldest[0]);
+        // O(1) eviction: delete first (oldest inserted) key
+        const firstKey = _cache.keys().next().value;
+        if (firstKey) _cache.delete(firstKey);
     }
 }
 
@@ -641,16 +646,37 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
         const halaqaId = teacherDoc.data().halaqaId;
         if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
 
-        const [studentsSnap, examsSnap, behaviorSnap, progressSnap] = await Promise.all([
+        // Build month keys that fall within the requested period
+        const periodStart = new Date(start);
+        const periodEnd = new Date(end);
+        const monthKeys = [];
+        const cursor = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1);
+        while (cursor <= periodEnd) {
+            monthKeys.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`);
+            cursor.setMonth(cursor.getMonth() + 1);
+        }
+
+        const [studentsSnap, progressSnap] = await Promise.all([
             db.collection('students').where('halaqaId', '==', halaqaId).get(),
-            db.collection('exams').where('monthKey', '==', `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`).get(),
-            db.collection('behavior_records').orderBy('createdAt', 'desc').limit(20).get(),
             db.collection('progress').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
         ]);
 
-        const studentMap = {};
         const studentIds = new Set();
+        const studentMap = {};
         studentsSnap.forEach(doc => { studentMap[doc.id] = doc.data().fullName || doc.data().name || '?'; studentIds.add(doc.id); });
+
+        // Fetch exams for all relevant months (Firestore 'in' supports up to 30)
+        const examsSnap = monthKeys.length > 0
+            ? await db.collection('exams').where('monthKey', 'in', monthKeys.slice(0, 30)).get()
+            : { forEach: () => { } };
+
+        // Fetch behavior filtered by student IDs in this halaqa (up to 10 per query)
+        const studentIdList = [...studentIds].slice(0, 10);
+        const behaviorSnap = studentIdList.length > 0
+            ? await db.collection('behavior_records').where('studentId', 'in', studentIdList).orderBy('createdAt', 'desc').limit(20).get()
+            : { forEach: () => { } };
+
+        // studentMap and studentIds already built above
 
         // Latest progress per student
         const latest = {};
@@ -719,16 +745,26 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
 
         // Fuzzy name search
         const searchLower = student_name.toLowerCase().trim();
-        let found = null;
-        let foundId = null;
+        const matches = [];
 
         studentsSnap.forEach(doc => {
             const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
             if (name.includes(searchLower) || searchLower.includes(name.split(' ')[0])) {
-                found = doc.data();
-                foundId = doc.id;
+                matches.push({ data: doc.data(), id: doc.id });
             }
         });
+
+        if (matches.length > 1) {
+            // Return list of matches so the AI can ask the user
+            return JSON.stringify({
+                multiple: true,
+                message: `وجدت ${matches.length} طلاب بهذا الاسم، حدد أيهم:`,
+                students: matches.map(m => ({ id: m.id, name: m.data.fullName || m.data.name }))
+            });
+        }
+
+        const found = matches.length === 1 ? matches[0].data : null;
+        const foundId = matches.length === 1 ? matches[0].id : null;
 
         if (!found) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}" في الحلقة` });
 
@@ -892,7 +928,7 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
 
     try {
         const [overview, monthAttSnap, demotionSnap] = await Promise.all([
-            tool_get_academy_overview().then(JSON.parse),
+            tool_get_academy_overview({ date: getTodayStr() }).then(JSON.parse),
             db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
             db.collection('demotion_alerts').orderBy('createdAt', 'desc').limit(10).get(),
         ]);
@@ -905,8 +941,8 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
         }
 
         // Low attendance
-        if (parseInt(overview.today_attendance?.rate) < 60 && (overview.today_attendance?.present + overview.today_attendance?.absent) > 0) {
-            alerts.push({ level: "⚠️", message: `نسبة الحضور منخفضة: ${overview.today_attendance.rate}` });
+        if (parseInt(overview.attendance?.rate) < 60 && (overview.attendance?.present + overview.attendance?.absent) > 0) {
+            alerts.push({ level: "⚠️", message: `نسبة الحضور منخفضة: ${overview.attendance.rate}` });
         }
 
         // Monthly top absentees
@@ -953,15 +989,28 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
 }
 
 // ─── Tool: get_academy_exams_and_behavior (Admin) ───
-async function tool_get_academy_exams_and_behavior() {
-    const ck = `academy_eb`;
+async function tool_get_academy_exams_and_behavior({ period = 'month' } = {}) {
+    const ck = `academy_eb_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
 
+    const { start, end, label } = getDateRange(period);
+
     try {
-        const monthKey = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+        // Build month keys for the requested period
+        const periodStart = new Date(start);
+        const periodEnd = new Date(end);
+        const monthKeys = [];
+        const cursor = new Date(periodStart.getFullYear(), periodStart.getMonth(), 1);
+        while (cursor <= periodEnd) {
+            monthKeys.push(`${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}`);
+            cursor.setMonth(cursor.getMonth() + 1);
+        }
+
         const [examsSnap, behaviorSnap] = await Promise.all([
-            db.collection('exams').where('monthKey', '==', monthKey).get(),
+            monthKeys.length > 0
+                ? db.collection('exams').where('monthKey', 'in', monthKeys.slice(0, 30)).get()
+                : Promise.resolve({ forEach: () => { }, size: 0 }),
             db.collection('behavior_records').orderBy('createdAt', 'desc').limit(15).get(),
         ]);
 
@@ -984,6 +1033,7 @@ async function tool_get_academy_exams_and_behavior() {
         behaviorSnap.forEach(doc => { if (doc.data().isPositive) positive++; else negative++; });
 
         const result = JSON.stringify({
+            period: label,
             exams: { total: examsSnap.size, by_type: exams },
             behavior: { positive, negative, total: positive + negative },
         });
@@ -1073,7 +1123,7 @@ async function callGroq(messages, tools, maxRetries = 2) {
         model: 'meta-llama/llama-4-scout-17b-16e-instruct',
         messages,
         temperature: 0.4,
-        max_tokens: 1024,
+        max_tokens: 2048,
     };
 
     if (tools && tools.length > 0) {
@@ -1149,16 +1199,30 @@ export default async function handler(req, res) {
     if (GROQ_API_KEYS.length === 0) return res.status(500).json({ error: 'No GROQ API keys configured' });
 
     const { message, role, studentId, teacherId, history } = req.body;
-    if (!message) return res.status(400).json({ error: 'Message is required' });
+    if (!message || typeof message !== 'string') return res.status(400).json({ error: 'Message is required' });
+
+    // Input validation
+    const safeMessage = message.slice(0, 2000); // limit message length
+    const validRoles = ['student', 'teacher', 'admin'];
+    const safeRole = validRoles.includes(role) ? role : 'student';
+    if (studentId && typeof studentId !== 'string') return res.status(400).json({ error: 'Invalid studentId' });
+    if (teacherId && typeof teacherId !== 'string') return res.status(400).json({ error: 'Invalid teacherId' });
 
     try {
-        const systemPrompt = PROMPTS[role] || PROMPTS.student;
-        const tools = getToolsForRole(role || 'student');
+        const systemPrompt = PROMPTS[safeRole] || PROMPTS.student;
+        const tools = getToolsForRole(safeRole);
 
-        // Inject user identity context so AI knows WHO is asking
-        let identityHint = '';
-        if (role === 'student' && studentId) identityHint = `\n[معرّف الطالب: ${studentId}]`;
-        else if (role === 'teacher' && (teacherId || studentId)) identityHint = `\n[معرّف المعلم: ${teacherId || studentId}]`;
+        // Inject context: identity + current date/time
+        const now = new Date();
+        const todayDate = getTodayStr();
+        const dayNames = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+        const dayName = dayNames[now.getDay()];
+        const timeStr = now.toLocaleTimeString('ar-SA', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit' });
+
+        let identityHint = `\n[التاريخ: ${todayDate} (${dayName}) | الوقت: ${timeStr}]`;
+        if (role === 'student' && studentId) identityHint += `\n[معرّف الطالب: ${studentId}]`;
+        else if (role === 'teacher' && (teacherId || studentId)) identityHint += `\n[معرّف المعلم: ${teacherId || studentId}]`;
+        else if (role === 'admin') identityHint += `\n[مدير الأكاديمية]`;
 
         // Build messages
         const messages = [
@@ -1175,9 +1239,9 @@ export default async function handler(req, res) {
             }
         }
 
-        messages.push({ role: 'user', content: message });
+        messages.push({ role: 'user', content: safeMessage });
 
-        console.log(`🤖 [${role}] "${message.substring(0, 60)}" | Tools: ${tools.length}`);
+        console.log(`🤖 [${safeRole}] "${safeMessage.substring(0, 60)}" | Tools: ${tools.length}`);
 
         // ── Function Calling Loop (max 3 rounds) ──
         let finalResponse = null;
@@ -1202,8 +1266,8 @@ export default async function handler(req, res) {
                 // Add assistant message with tool calls
                 messages.push(msg);
 
-                // Execute each tool call
-                for (const toolCall of msg.tool_calls) {
+                // Execute all tool calls in parallel for better performance
+                const toolPromises = msg.tool_calls.map(async (toolCall) => {
                     const fn = toolCall.function;
                     const handler_fn = TOOL_HANDLERS[fn.name];
 
@@ -1226,12 +1290,15 @@ export default async function handler(req, res) {
                         toolResult = JSON.stringify({ error: `Unknown tool: ${fn.name}` });
                     }
 
-                    messages.push({
+                    return {
                         role: 'tool',
                         tool_call_id: toolCall.id,
                         content: toolResult,
-                    });
-                }
+                    };
+                });
+
+                const toolResults = await Promise.all(toolPromises);
+                messages.push(...toolResults);
 
                 // Continue loop — Groq will process tool results
                 continue;
