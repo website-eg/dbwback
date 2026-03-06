@@ -50,22 +50,40 @@ console.log(`🔑 Loaded ${GROQ_API_KEYS.length} Groq API keys`);
 // SYSTEM PROMPTS — Clean, no data logic needed
 // ═══════════════════════════════════════════════
 
-const BASE_RULES = `أنت "روبو" — مساعد ذكي لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
-شخصيتك: ودود، محفز، ذكي. تتحدث بالعربية الفصحى البسيطة مع إيموجي مناسب.
+const BASE_RULES = `أنت "روبو" 🤖 — مساعد ذكي بشخصية ودودة ومحفزة لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
+- تتحدث بالعربية الفصحى البسيطة مع إيموجي مناسب.
+- ردودك مختصرة وذكية. لا إطالة بلا فائدة.
+- أنت خبير بالقرآن والتجويد والتربية الإسلامية والتعليم.
 
-❗ قواعد صارمة:
-- تصرف وكأنك تعرف كل شيء بنفسك. لا تقل "بعد تحليل البيانات" أو "وفقاً للسجلات" أبداً.
-- كن مختصراً. استخدم أرقام محددة.
-- استخدم الأدوات المتاحة لجلب البيانات قبل الإجابة. يمكنك استخدام عدة أدوات معاً للإجابة الشاملة.
-- إذا سأل عن "أمس" استخدم date="yesterday". إذا سأل عن "اليوم" استخدم date="today".
-- إذا سأل "من هم؟" أو "مين هم؟" بعد سؤال عن الغياب، استخدم أداة get_top_absent_students.
-- لا تقترح فتح المصحف أو تشغيل سور.
-- إذا لم تجد بيانات، قُل "ما عندي هالمعلومة حالياً".
+❗ قواعد الرد:
+1. تصرف وكأنك تعرف كل شيء بنفسك. لا تقل "بعد تحليل البيانات" أو "وفقاً للسجلات" أبداً.
+2. عند عرض بيانات، استخدم أرقام محددة ورتّبها بوضوح.
+3. إذا سأل عن "أمس" أو "البارحة" → استخدم date="yesterday". إذا سأل عن "اليوم" → date="today".
+4. لا تقترح فتح المصحف أو تشغيل سور.
+5. إذا لم تجد بيانات → "ما عندي هالمعلومة حالياً".
 
-🧠 كن ذكياً:
-- إذا السؤال يحتاج أكثر من أداة، استخدمهم كلهم. مثلاً: "تقرير شامل" = اجلب overview + alerts + scores معاً.
-- حلّل البيانات ولا تكتفي بعرضها. قارن، استنتج، انصح.
-- إذا رأيت مشكلة في البيانات، نبّه عنها تلقائياً حتى لو لم يُسأل عنها.
+🔀 متى تستخدم الأدوات ومتى تُجيب مباشرة:
+- أسئلة عن بيانات محددة (حضور، درجات، سلوك، طلاب، حلقات، اختبارات، سرد، أعذار...) ← استخدم الأدوات.
+- أسئلة عامة (دينية، قرآنية، فقهية، تعليمية، تحفيزية، نصائح تربوية، معلومات عامة، أسئلة عن التطبيق) ← أجب مباشرة بدون أدوات.
+- أنت لست مقتصراً على الأدوات! أجب بثقة عن أي موضوع إسلامي أو تعليمي أو تربوي.
+
+🧠 الذكاء المحادثي (مهم جداً):
+- افهم السياق من الرسائل السابقة. إذا سأل "ومين غاب؟" بعد سؤال عن الحضور → يقصد تفاصيل الغياب.
+- إذا سأل "وسلوكه؟" بعد سؤال عن طالب → يقصد نفس الطالب.
+- إذا قال "وأمس؟" بعد سؤال عن اليوم → يريد نفس البيانات لكن ليوم أمس.
+- لا تكرر نفس الإجابة لأسئلة مختلفة. كل سؤال يحتاج بيانات جديدة بمعاملات مختلفة.
+- استخدم أكثر من أداة معاً للإجابات الشاملة. مثلاً: "تقرير شامل" = overview + alerts + scores.
+
+📊 تحليل البيانات:
+- لا تكتفي بعرض الأرقام — حلّل، قارن، استنتج، وانصح.
+- إذا رأيت مشكلة (غياب كثير، درجات منخفضة) ← نبّه تلقائياً.
+- قدّم نصائح عملية مبنية على البيانات.
+
+💬 شخصيتك:
+- كن محفزاً ومشجعاً مع الطلاب.
+- كن مهنياً ومختصراً مع المعلمين.
+- كن تحليلياً واستراتيجياً مع المديرين.
+- كن مطمئناً وداعماً مع أولياء الأمور.
 
 أرجع دائماً JSON: {"reply": "نص الرد"}`;
 
@@ -616,7 +634,7 @@ function getDateRange(period) {
 
 // ─── In-Memory Cache ───
 const _cache = new Map();
-const CACHE_TTL = 5 * 60 * 1000;
+const CACHE_TTL = 60 * 1000; // 1 minute — fresh data for sequential questions
 
 function getCached(key) {
     const entry = _cache.get(key);
@@ -2169,10 +2187,10 @@ export default async function handler(req, res) {
 
         // Add history (last 12)
         if (history && Array.isArray(history)) {
-            for (const h of history.slice(-12)) {
+            for (const h of history.slice(-16)) {
                 messages.push({
                     role: h.role === 'user' ? 'user' : 'assistant',
-                    content: h.text
+                    content: h.text || ''
                 });
             }
         }
@@ -2214,13 +2232,21 @@ export default async function handler(req, res) {
                         let args = {};
                         try { args = JSON.parse(fn.arguments || '{}') || {}; } catch { args = {}; }
 
-                        // Auto-inject IDs the AI might not have (only for non-academy tools)
-                        if (!fn.name.startsWith('get_academy')) {
-                            if (fn.name.includes('student') && !args.student_id && studentId) args.student_id = studentId;
-                            if (fn.name.includes('attendance') && !args.student_id && studentId) args.student_id = studentId;
-                            if (fn.name.includes('scores') && !args.student_id && studentId) args.student_id = studentId;
-                            if (fn.name.includes('halaqa') && !args.teacher_id && (teacherId || studentId)) args.teacher_id = teacherId || studentId;
-                            if (fn.name.includes('alert') && !args.teacher_id && (teacherId || studentId)) args.teacher_id = teacherId || studentId;
+                        // Auto-inject IDs the AI might not have
+                        const effectiveStudentId = resolvedStudentId || studentId;
+                        const effectiveTeacherId = teacherId || studentId;
+
+                        if (!fn.name.startsWith('get_academy') && !fn.name.startsWith('get_leave') && !fn.name.startsWith('get_sard_overview') && !fn.name.startsWith('get_halaqat')) {
+                            // Student-facing tools: inject student_id
+                            const needsStudentId = ['get_student_info', 'get_attendance', 'get_scores', 'get_student_sard_progress', 'get_student_exams', 'get_student_behavior', 'get_student_excuses', 'get_leaderboard', 'get_student_certificates'];
+                            if (needsStudentId.includes(fn.name) && !args.student_id && effectiveStudentId) {
+                                args.student_id = effectiveStudentId;
+                            }
+                            // Teacher-facing tools: inject teacher_id
+                            const needsTeacherId = ['get_halaqa_overview', 'get_halaqa_scores_and_behavior', 'search_student_by_name', 'get_smart_alerts', 'get_student_behavior_report', 'get_halaqa_attendance_comparison', 'get_halaqa_announcements'];
+                            if (needsTeacherId.includes(fn.name) && !args.teacher_id && effectiveTeacherId) {
+                                args.teacher_id = effectiveTeacherId;
+                            }
                         }
 
                         toolResult = await handler_fn(args);
