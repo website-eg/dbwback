@@ -137,10 +137,16 @@ const PROMPTS = {
 - "مقارنة الحلقات" → get_halaqat_comparison
 - "طلبات الإذن" / "الأعذار" → get_leave_requests
 - "إحصائيات السرد" → get_sard_overview
-- "معلومات طالب [اسم]" → get_student_management_info
-- "سلوك الطلاب" / "سجلات السلوك" / "من لديه سلوكيات" → get_behavior_overview
+- "سلوك الطلاب" / "من لديه سلوكيات" → get_behavior_overview
 - "سلوك طالب معين" → get_student_behavior_report(student_name=الاسم)
 - "تقرير شامل" → get_academy_overview + get_academy_alerts + get_top_absent_students + get_leave_requests + get_sard_overview كلهم معاً
+
+🔍 بحث عن طالب (مهم جداً):
+- أي بحث عن طالب (بالاسم أو الكود أو الرقم القومي أو رقم الجوال أو تاريخ الميلاد) → استخدم get_student_management_info(student_name=القيمة)
+- "طالب كوده 2019" أو "صاحب الكود 2019" أو حتى "2019" في سياق بحث → get_student_management_info(student_name="2019")
+- "الرقم القومي 30604151205159" → get_student_management_info(student_name="30604151205159")
+- "معلومات طالب أحمد" → get_student_management_info(student_name="أحمد")
+- ⚡ أداة get_student_management_info تبحث في كل الحقول تلقائياً: اسم، كود، رقم قومي، هاتف، تاريخ ميلاد
 
 ⚠️ قواعد المدير:
 - ابدأ بالتنبيهات العاجلة أولاً.
