@@ -138,6 +138,8 @@ const PROMPTS = {
 - "طلبات الإذن" / "الأعذار" → get_leave_requests
 - "إحصائيات السرد" → get_sard_overview
 - "معلومات طالب [اسم]" → get_student_management_info
+- "سلوك الطلاب" / "سجلات السلوك" / "من لديه سلوكيات" → get_behavior_overview
+- "سلوك طالب معين" → get_student_behavior_report(student_name=الاسم)
 - "تقرير شامل" → get_academy_overview + get_academy_alerts + get_top_absent_students + get_leave_requests + get_sard_overview كلهم معاً
 
 ⚠️ قواعد المدير:
@@ -180,7 +182,7 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_student_info",
-                description: "جلب معلومات طالب: الاسم، الحلقة، النجوم، النوع (أساسي/احتياط)، المستوى",
+                description: "جلب كل معلومات الطالب: الاسم، الحلقة، النجوم، السلوك، الرقم القومي، تاريخ الميلاد، رقم ولي الأمر، السرد، المستوى",
                 parameters: {
                     type: "object",
                     properties: {
@@ -345,12 +347,12 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "search_student_by_name",
-                description: "بحث عن طالب بالاسم في حلقة المعلم وجلب كل بياناته",
+                description: "بحث واسع عن طالب في حلقة المعلم بالاسم، الرقم القومي، رقم الهاتف، الكود، أو تاريخ الميلاد",
                 parameters: {
                     type: "object",
                     properties: {
                         teacher_id: { type: "string", description: "معرّف المعلم" },
-                        student_name: { type: "string", description: "اسم الطالب أو جزء منه" }
+                        student_name: { type: "string", description: "معيار البحث (اسم، كود، رقم، يوم ميلاد)" }
                     },
                     required: ["teacher_id", "student_name"]
                 }
@@ -504,11 +506,11 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_student_management_info",
-                description: "بحث عن طالب بالاسم في كل الأكاديمية وجلب بياناته الشاملة",
+                description: "بحث عن طالب في كل الأكاديمية بالاسم، الرقم القومي، رقم الهاتف، الكود، أو تاريخ الميلاد",
                 parameters: {
                     type: "object",
                     properties: {
-                        student_name: { type: "string", description: "اسم الطالب أو جزء منه" }
+                        student_name: { type: "string", description: "معيار البحث (اسم، كود، رقم قومي/هاتف، يوم ميلاد)" }
                     },
                     required: ["student_name"]
                 }
@@ -528,6 +530,21 @@ function getToolsForRole(role) {
                 }
             }
         },
+        {
+            type: "function",
+            function: {
+                name: "get_behavior_overview",
+                description: "نظرة شاملة على سجلات السلوك في الأكاديمية: الطلاب الأكثر سلوكيات سلبية، أفضل الطلاب سلوكاً، إجمالي السجلات",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        period: PERIOD_PARAM,
+                        limit: { type: "string", description: "عدد النتائج (الافتراضي 10)" }
+                    },
+                    required: []
+                }
+            }
+        },
     ];
 
     // Parent uses same tools as student (for their child)
@@ -535,7 +552,7 @@ function getToolsForRole(role) {
 
     switch (role) {
         case 'teacher': return [...commonTools, ...studentTools, ...teacherTools];
-        case 'admin': return [...commonTools, ...studentTools, ...adminTools];
+        case 'admin': return [...commonTools, ...studentTools, ...teacherTools, ...adminTools];
         case 'parent': return [...commonTools, ...parentTools];
         default: return [...commonTools, ...studentTools]; // student
     }
@@ -664,11 +681,19 @@ async function tool_get_student_info({ student_id }) {
 
         const s = doc.data();
         const result = JSON.stringify({
-            name: s.fullName || 'غير معروف',
+            student_id: doc.id,
+            name: s.fullName || s.name || 'غير معروف',
             halaqa: s.halaqaName || 'غير محدد',
             type: s.type === 'reserve' ? 'احتياط' : 'أساسي',
             stars: s.stars || 0,
+            behavior_points: s.behaviorPoints || 0,
             level: s.currentLevel || null,
+            national_id: s.nationalId || null,
+            birth_date: s.birthDate || null,
+            gender: s.gender === 'male' ? 'ذكر' : s.gender === 'female' ? 'أنثى' : s.gender || null,
+            parent_phone: s.parentPhone || null,
+            sard_parts: Array.isArray(s.sard) ? s.sard.length : 0,
+            joined: s.createdAt?.toDate?.()?.toLocaleDateString('en-CA') || null,
         });
         setCache(ck, result);
         return result;
@@ -972,40 +997,72 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
 }
 
 // ─── Tool: search_student_by_name ───
+// Universal search: by name, national ID, phone, or document ID
 async function tool_search_student_by_name({ teacher_id, student_name }) {
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
-        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        let studentsSnap;
 
-        const halaqaId = teacherDoc.data().halaqaId;
-        if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
+        // If teacher_id provided and valid, search within their halaqa first
+        if (teacher_id) {
+            const teacherDoc = await db.collection('users').doc(teacher_id).get();
+            if (teacherDoc.exists && teacherDoc.data().halaqaId) {
+                studentsSnap = await db.collection('students').where('halaqaId', '==', teacherDoc.data().halaqaId).get();
+            } else {
+                studentsSnap = await db.collection('students').get();
+            }
+        } else {
+            studentsSnap = await db.collection('students').get();
+        }
 
-        const studentsSnap = await db.collection('students').where('halaqaId', '==', halaqaId).get();
-
-        // Fuzzy name search
         const searchLower = student_name.toLowerCase().trim();
+        const searchWords = searchLower.split(/\s+/);
+        const isNumeric = /^\d+$/.test(searchLower);
         const matches = [];
 
         studentsSnap.forEach(doc => {
-            const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
-            if (name.includes(searchLower) || searchLower.includes(name.split(' ')[0])) {
-                matches.push({ data: doc.data(), id: doc.id });
+            const d = doc.data();
+            const name = (d.fullName || d.name || '').toLowerCase();
+            const nationalId = (d.nationalId || '').toLowerCase();
+            const phone = (d.parentPhone || '').toLowerCase();
+            const docId = doc.id.toLowerCase();
+            const birthDate = (d.birthDate || '').toLowerCase();
+
+            let matched = false;
+
+            // Match by exact document ID
+            if (docId === searchLower || docId.includes(searchLower)) matched = true;
+            // Match by national ID
+            else if (isNumeric && nationalId.includes(searchLower)) matched = true;
+            // Match by phone
+            else if (isNumeric && phone.includes(searchLower)) matched = true;
+            // Match by birthdate
+            else if (birthDate.includes(searchLower)) matched = true;
+            // Match by name (full or partial)
+            else if (name.includes(searchLower)) matched = true;
+            // Match by any word in name
+            else if (searchWords.some(w => w.length > 2 && name.includes(w))) matched = true;
+
+            if (matched) {
+                matches.push({ data: d, id: doc.id });
             }
         });
 
         if (matches.length > 1) {
-            // Return list of matches so the AI can ask the user
             return JSON.stringify({
                 multiple: true,
                 message: `وجدت ${matches.length} طلاب بهذا الاسم، حدد أيهم:`,
-                students: matches.map(m => ({ id: m.id, name: m.data.fullName || m.data.name }))
+                students: matches.slice(0, 10).map(m => ({
+                    id: m.id,
+                    name: m.data.fullName || m.data.name,
+                    halaqa: m.data.halaqaName || 'غير محدد',
+                }))
             });
         }
 
         const found = matches.length === 1 ? matches[0].data : null;
         const foundId = matches.length === 1 ? matches[0].id : null;
 
-        if (!found) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}" في الحلقة` });
+        if (!found) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}"` });
 
         // Get attendance + scores for this student
         const { start, end } = getDateRange('year');
@@ -1026,7 +1083,7 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
 
         const progs = [];
         progSnap.forEach(doc => progs.push(doc.data()));
-        progs.sort((a, b) => b.date.localeCompare(a.date));
+        progs.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
         let avgTotal = 0;
         if (progs.length > 0) {
@@ -1036,10 +1093,12 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
         }
 
         return JSON.stringify({
+            student_id: foundId,
             name: found.fullName || found.name,
+            halaqa: found.halaqaName || 'غير محدد',
             type: found.type === 'reserve' ? 'احتياط' : 'أساسي',
             stars: found.stars || 0,
-            attendance: { present, absent, today: todayStatus },
+            attendance: { present, absent, today: todayStatus, total_days: present + absent },
             scores: {
                 sessions: progs.length,
                 avg_total: `${avgTotal}/40`,
@@ -1883,22 +1942,40 @@ async function tool_get_student_management_info({ student_name }) {
     try {
         const studentsSnap = await db.collection('students').get();
         const searchLower = student_name.toLowerCase().trim();
+        const searchWords = searchLower.split(/\s+/);
+        const isNumeric = /^\d+$/.test(searchLower);
 
         const matches = [];
         studentsSnap.forEach(doc => {
-            const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
-            if (name.includes(searchLower)) {
-                matches.push({ data: doc.data(), id: doc.id });
+            const d = doc.data();
+            const name = (d.fullName || d.name || '').toLowerCase();
+            const nationalId = (d.nationalId || '').toLowerCase();
+            const phone = (d.parentPhone || '').toLowerCase();
+            const docId = doc.id.toLowerCase();
+            const birthDate = (d.birthDate || '').toLowerCase();
+
+            let matched = false;
+
+            if (docId === searchLower || docId.includes(searchLower)) matched = true;
+            else if (isNumeric && nationalId.includes(searchLower)) matched = true;
+            else if (isNumeric && phone.includes(searchLower)) matched = true;
+            else if (birthDate.includes(searchLower)) matched = true;
+            else if (name.includes(searchLower)) matched = true;
+            else if (searchWords.some(w => w.length > 2 && name.includes(w))) matched = true;
+
+            if (matched) {
+                matches.push({ data: d, id: doc.id });
             }
         });
 
-        if (matches.length === 0) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}"` });
+        if (matches.length === 0) return JSON.stringify({ error: `لم أجد طالب يطابق "${student_name}"` });
 
         if (matches.length > 3) {
             return JSON.stringify({
                 multiple: true,
-                message: `وجدت ${matches.length} طلاب بهذا الاسم`,
+                message: `وجدت ${matches.length} طلاب مطابقين للبحث، أي منهم تقصد؟`,
                 students: matches.slice(0, 10).map(m => ({
+                    id: m.id,
                     name: m.data.fullName || m.data.name,
                     halaqa: m.data.halaqaName || 'غير محدد',
                 })),
@@ -1936,9 +2013,12 @@ async function tool_get_student_management_info({ student_name }) {
             const sardList = Array.isArray(s.sard) ? s.sard : [];
 
             results.push({
+                student_id: sid,
                 name: s.fullName || s.name,
                 type: s.type === 'reserve' ? 'احتياط' : 'أساسي',
                 halaqa: s.halaqaName || 'غير محدد',
+                national_id: s.nationalId || null,
+                parent_phone: s.parentPhone || null,
                 stars: s.stars || 0,
                 behavior_points: s.behaviorPoints || 0,
                 sard_parts: sardList.length,
@@ -2025,6 +2105,86 @@ async function tool_get_halaqat_comparison({ period = 'month' } = {}) {
     }
 }
 
+// ─── Tool: get_behavior_overview (Admin) ───
+async function tool_get_behavior_overview({ period = 'month', limit = '10' } = {}) {
+    const ck = `behavior_overview_${period}_${limit}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const { start, end, label } = getDateRange(period);
+        const maxResults = Math.min(parseInt(limit) || 10, 30);
+
+        // Get behavior records in the period
+        const behaviorSnap = await db.collection('behavior_records')
+            .where('date', '>=', start)
+            .where('date', '<=', end)
+            .get();
+
+        if (behaviorSnap.empty) return JSON.stringify({ message: "لا توجد سجلات سلوك في هذه الفترة", period: label });
+
+        const perStudent = {};
+        let totalPositive = 0, totalNegative = 0;
+
+        behaviorSnap.forEach(doc => {
+            const d = doc.data();
+            const sid = d.studentId;
+            if (!perStudent[sid]) {
+                perStudent[sid] = {
+                    name: d.studentName || '?',
+                    halaqa: d.halaqaName || 'غير محدد',
+                    positive: 0,
+                    negative: 0,
+                    categories: {},
+                };
+            }
+            if (d.isPositive) { perStudent[sid].positive++; totalPositive++; }
+            else { perStudent[sid].negative++; totalNegative++; }
+
+            // Track categories
+            const cat = d.category || 'أخرى';
+            perStudent[sid].categories[cat] = (perStudent[sid].categories[cat] || 0) + 1;
+        });
+
+        const students = Object.values(perStudent);
+
+        // Sort by most negative behavior
+        const worstBehavior = [...students]
+            .filter(s => s.negative > 0)
+            .sort((a, b) => b.negative - a.negative)
+            .slice(0, maxResults)
+            .map(s => ({
+                name: s.name,
+                halaqa: s.halaqa,
+                negative: s.negative,
+                positive: s.positive,
+                top_category: Object.entries(s.categories).sort((a, b) => b[1] - a[1])[0]?.[0] || null,
+            }));
+
+        // Sort by most positive behavior
+        const bestBehavior = [...students]
+            .filter(s => s.positive > 0)
+            .sort((a, b) => b.positive - a.positive)
+            .slice(0, 5)
+            .map(s => ({ name: s.name, halaqa: s.halaqa, positive: s.positive }));
+
+        const result = JSON.stringify({
+            period: label,
+            total_records: behaviorSnap.size,
+            total_positive: totalPositive,
+            total_negative: totalNegative,
+            students_with_records: students.length,
+            worst_behavior: worstBehavior,
+            best_behavior: bestBehavior,
+            advice: totalNegative > totalPositive ? '⚠️ السلوكيات السلبية أكثر — يحتاج تدخل' : '✅ السلوك العام إيجابي',
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب نظرة السلوك" });
+    }
+}
+
 // ─── Tool Router ───
 const TOOL_HANDLERS = {
     // Common
@@ -2055,6 +2215,7 @@ const TOOL_HANDLERS = {
     get_sard_overview: tool_get_sard_overview,
     get_student_management_info: tool_get_student_management_info,
     get_halaqat_comparison: tool_get_halaqat_comparison,
+    get_behavior_overview: tool_get_behavior_overview,
 };
 
 // ═══════════════════════════════════════════════
