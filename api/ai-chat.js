@@ -2369,6 +2369,22 @@ export default async function handler(req, res) {
 
         messages.push({ role: 'user', content: safeMessage });
 
+        // ── Smart search detection: hint the model to use tools ──
+        if (safeRole === 'admin' || safeRole === 'teacher') {
+            const searchKeywords = ['ابحث', 'كود', 'الكود', 'رقم قومي', 'الرقم القومي', 'رقم هاتف', 'رقم جوال', 'صاحب', 'طالب اسمه', 'معلومات طالب', 'بيانات طالب', 'ميلاد'];
+            const msgLower = safeMessage.toLowerCase();
+            const looksLikeSearch = searchKeywords.some(kw => msgLower.includes(kw)) || /^\d{3,}$/.test(msgLower.trim());
+
+            if (looksLikeSearch) {
+                // Extract the search value from the message
+                const numericMatch = safeMessage.match(/\d{3,}/);
+                const searchHint = numericMatch
+                    ? `[تلميح: استخدم get_student_management_info(student_name="${numericMatch[0]}") للبحث عن هذا الرقم/الكود]`
+                    : `[تلميح: استخدم get_student_management_info للبحث. مرر القيمة المطلوبة في student_name]`;
+                messages.push({ role: 'system', content: searchHint });
+            }
+        }
+
         console.log(`🤖 [${safeRole}] "${safeMessage.substring(0, 60)}" | Tools: ${tools.length}`);
 
         // ── Function Calling Loop (max 3 rounds) ──
