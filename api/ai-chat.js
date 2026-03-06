@@ -77,11 +77,18 @@ const PROMPTS = {
 ماذا تفعل:
 - "كم غبت؟" → get_attendance ثم أجب بالرقم
 - "كم نجومي؟" → get_student_info
-- "كيف أدائي؟" → get_attendance + get_scores معاً ثم لخّص
+- "كيف أدائي؟" → get_attendance + get_scores + get_student_behavior معاً ثم لخّص
 - "كيف أتحسن؟" → get_scores ثم نصائح مخصصة
+- "كم سردت؟" / "تقدمي بالسرد" → get_student_sard_progress
+- "نتائج اختباراتي" / "درجتي بالاختبار" → get_student_exams
+- "سلوكي" / "نقاط السلوك" → get_student_behavior
+- "حالة إذني" / "هل الإذن اتقبل" → get_student_excuses
+- "ترتيبي" / "لوحة الشرف" / "مين الأول" → get_leaderboard
+- "شهاداتي" / "التكريم" → get_student_certificates
+- "تقرير شامل عني" → استخدم get_attendance + get_scores + get_student_behavior + get_student_sard_progress + get_student_exams كلهم معاً
 - أسئلة دينية → أجب مباشرة
 
-🧠 نصائح تلقائية: غياب≥3 نبّه. درجة<7 انصح. أداء ممتاز شجّع.`,
+🧠 نصائح تلقائية: غياب≥3 نبّه. درجة<7 انصح. أداء ممتاز شجّع. سرد عالي قدّر.`,
 
     teacher: `${BASE_RULES}
 
@@ -92,8 +99,12 @@ const PROMPTS = {
 - "تقرير الحلقة" → get_halaqa_overview + get_halaqa_scores_and_behavior + get_smart_alerts كلهم معاً
 - "تقرير عن أحمد" → search_student_by_name ثم get_attendance + get_scores
 - "مين يحتاج متابعة؟" → get_smart_alerts
+- "سلوك أحمد" / "سلوك الحلقة" → get_student_behavior_report
+- "مقارنة أيام الأسبوع" / "وين أكثر غياب" → get_halaqa_attendance_comparison
+- "إعلاناتي" / "التنويهات" → get_halaqa_announcements
+- "تقرير شامل" → get_halaqa_overview + get_halaqa_scores_and_behavior + get_smart_alerts + get_student_behavior_report + get_halaqa_attendance_comparison
 
-⚠️ كن استباقياً: غياب≥3 نبّه. درجات منخفضة أشر. حضور غير مسجل ذكّر.`,
+⚠️ كن استباقياً: غياب≥3 نبّه. درجات منخفضة أشر. حضور غير مسجل ذكّر. سلوك سلبي متكرر أشر.`,
 
     admin: `${BASE_RULES}
 
@@ -103,17 +114,37 @@ const PROMPTS = {
 - "كم طالب؟" / "إحصائيات" → get_academy_overview
 - "كم غياب اليوم؟" → get_academy_overview(date="today")
 - "كم غياب أمس؟" → get_academy_overview(date="yesterday")
-- "كم غياب 2026-03-01؟" → get_academy_overview(date="2026-03-01")
-- "من هم؟" / "مين الغايبين؟" / "أكثر غياباً" → get_top_absent_students
+- "من هم؟" / "أكثر غياباً" → get_top_absent_students
 - "تنبيهات" / "مشاكل" → get_academy_alerts
-- "تقرير شامل" → استخدم get_academy_overview + get_academy_alerts + get_top_absent_students كلهم معاً ثم لخّص
-- "مقارنة الحلقات" → get_academy_overview + get_academy_exams_and_behavior
+- "مقارنة الحلقات" → get_halaqat_comparison
+- "طلبات الإذن" / "الأعذار" → get_leave_requests
+- "إحصائيات السرد" → get_sard_overview
+- "معلومات طالب [اسم]" → get_student_management_info
+- "تقرير شامل" → get_academy_overview + get_academy_alerts + get_top_absent_students + get_leave_requests + get_sard_overview كلهم معاً
 
 ⚠️ قواعد المدير:
 - ابدأ بالتنبيهات العاجلة أولاً.
 - قدّم توصيات عملية.
 - قارن بين الحلقات إذا طُلب.
 - إذا الغياب مرتفع نبّه حتى لو ما سأل.`,
+
+    parent: `${BASE_RULES}
+
+أنت تتحدث مع **ولي أمر** طالب. كن محترماً وودوداً.
+
+ماذا تفعل:
+- "كيف ابني؟" / "كيف أداؤه؟" → get_attendance + get_scores + get_student_behavior معاً ثم لخّص
+- "هل ابني حاضر؟" / "حضور ابني" → get_attendance
+- "درجات ابني" → get_scores
+- "سلوك ابني" → get_student_behavior
+- "اختبارات ابني" → get_student_exams
+- "حالة الإذن" → get_student_excuses
+- "كم سرد ابني" → get_student_sard_progress
+- "شهادات ابني" → get_student_certificates
+- "تقرير شامل" → استخدم كل الأدوات المتاحة
+
+🧠 كن صريحاً مع ولي الأمر. اذكر الإيجابيات والسلبيات. قدّم نصائح لمتابعة الابن في البيت.
+⚠️ إذا الأداء ضعيف، اقترح تواصل مع المعلم.`,
 };
 
 // ═══════════════════════════════════════════════
@@ -166,6 +197,94 @@ function getToolsForRole(role) {
                     properties: {
                         student_id: { type: "string", description: "معرّف الطالب" },
                         period: PERIOD_PARAM
+                    },
+                    required: ["student_id"]
+                }
+            }
+        },
+    ];
+
+    // ─── Student-specific tools ───
+    const studentTools = [
+        {
+            type: "function",
+            function: {
+                name: "get_student_sard_progress",
+                description: "جلب تقدم الطالب في السرد (التسميع): الأجزاء المكتملة، النسبة، الحجز القادم",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        student_id: { type: "string", description: "معرّف الطالب" }
+                    },
+                    required: ["student_id"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_student_exams",
+                description: "جلب نتائج اختبارات الطالب: شفهي، تحريري، قاعدة نورانية مع المتوسطات",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        student_id: { type: "string", description: "معرّف الطالب" }
+                    },
+                    required: ["student_id"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_student_behavior",
+                description: "جلب سجل سلوك الطالب: نقاط إيجابية وسلبية، آخر السجلات، ملخص",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        student_id: { type: "string", description: "معرّف الطالب" }
+                    },
+                    required: ["student_id"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_student_excuses",
+                description: "جلب حالة طلبات الإذن (الاستئذان) للطالب: معلقة، مقبولة، مرفوضة",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        student_id: { type: "string", description: "معرّف الطالب" }
+                    },
+                    required: ["student_id"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_leaderboard",
+                description: "جلب لوحة الشرف: ترتيب أفضل 10 طلاب بالنجوم + ترتيب الطالب الحالي",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        student_id: { type: "string", description: "معرّف الطالب لمعرفة ترتيبه" }
+                    },
+                    required: ["student_id"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_student_certificates",
+                description: "جلب شهادات التكريم التي حصل عليها الطالب",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        student_id: { type: "string", description: "معرّف الطالب" }
                     },
                     required: ["student_id"]
                 }
@@ -233,6 +352,50 @@ function getToolsForRole(role) {
                 }
             }
         },
+        {
+            type: "function",
+            function: {
+                name: "get_student_behavior_report",
+                description: "جلب تقرير السلوك الشامل لطلاب الحلقة أو لطالب معين",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        teacher_id: { type: "string", description: "معرّف المعلم" },
+                        student_name: { type: "string", description: "اسم طالب معين (اختياري، إذا فارغ يجلب كل الحلقة)" }
+                    },
+                    required: ["teacher_id"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_halaqa_attendance_comparison",
+                description: "مقارنة حضور الحلقة حسب أيام الأسبوع لمعرفة أنماط الغياب",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        teacher_id: { type: "string", description: "معرّف المعلم" },
+                        period: PERIOD_PARAM
+                    },
+                    required: ["teacher_id"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_halaqa_announcements",
+                description: "جلب آخر الإعلانات والتنويهات في الحلقة",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        teacher_id: { type: "string", description: "معرّف المعلم" }
+                    },
+                    required: ["teacher_id"]
+                }
+            }
+        },
     ];
 
     const adminTools = [
@@ -282,7 +445,7 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_top_absent_students",
-                description: "ترتيب أكثر الطلاب غياباً في الأكاديمية كلها. ممكن على مستوى الشهر أو الفصل أو العام الدراسي أو كل الفترات.",
+                description: "ترتيب أكثر الطلاب غياباً في الأكاديمية كلها",
                 parameters: {
                     type: "object",
                     properties: {
@@ -293,12 +456,70 @@ function getToolsForRole(role) {
                 }
             }
         },
+        {
+            type: "function",
+            function: {
+                name: "get_leave_requests",
+                description: "جلب طلبات الإذن والأعذار: المعلقة والمقبولة والمرفوضة",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        status: { type: "string", description: "حالة الطلب: pending (معلقة) أو approved (مقبولة) أو rejected (مرفوضة) أو all (الكل). الافتراضي: all" }
+                    },
+                    required: []
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_sard_overview",
+                description: "جلب إحصائيات السرد في الأكاديمية: عدد الطلاب الذين سردوا، إجمالي الأجزاء، أفضل الطلاب",
+                parameters: {
+                    type: "object",
+                    properties: {},
+                    required: []
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_student_management_info",
+                description: "بحث عن طالب بالاسم في كل الأكاديمية وجلب بياناته الشاملة",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        student_name: { type: "string", description: "اسم الطالب أو جزء منه" }
+                    },
+                    required: ["student_name"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "get_halaqat_comparison",
+                description: "مقارنة تفصيلية بين كل الحلقات: نسبة الحضور، متوسط الدرجات، عدد الطلاب",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        period: PERIOD_PARAM
+                    },
+                    required: []
+                }
+            }
+        },
     ];
 
+    // Parent uses same tools as student (for their child)
+    const parentTools = [...studentTools];
+
     switch (role) {
-        case 'teacher': return [...commonTools, ...teacherTools];
-        case 'admin': return [...commonTools, ...adminTools];
-        default: return commonTools; // student
+        case 'teacher': return [...commonTools, ...studentTools, ...teacherTools];
+        case 'admin': return [...commonTools, ...studentTools, ...adminTools];
+        case 'parent': return [...commonTools, ...parentTools];
+        default: return [...commonTools, ...studentTools]; // student
     }
 }
 
@@ -1099,19 +1320,723 @@ async function tool_get_top_absent_students({ period = 'year', limit = '10' } = 
     }
 }
 
+// ═══════════════════════════════════════════════
+// NEW TOOL IMPLEMENTATIONS — Student Tools
+// ═══════════════════════════════════════════════
+
+// ─── Tool: get_student_sard_progress ───
+async function tool_get_student_sard_progress({ student_id }) {
+    const ck = `sard_${student_id}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const [studentDoc, bookingSnap] = await Promise.all([
+            db.collection('students').doc(student_id).get(),
+            db.collection('sard_bookings')
+                .where('studentId', '==', student_id)
+                .where('status', '==', 'confirmed')
+                .orderBy('date', 'desc')
+                .limit(1)
+                .get(),
+        ]);
+
+        if (!studentDoc.exists) return JSON.stringify({ error: "الطالب غير موجود" });
+
+        const s = studentDoc.data();
+        const sardList = Array.isArray(s.sard) ? s.sard : [];
+        const totalJuz = 30;
+        const completedCount = sardList.length;
+        const percentage = Math.round((completedCount / totalJuz) * 100);
+
+        let nextBooking = null;
+        if (!bookingSnap.empty) {
+            const b = bookingSnap.docs[0].data();
+            nextBooking = { date: b.date, slot: b.slot || null, status: b.status };
+        }
+
+        const result = JSON.stringify({
+            name: s.fullName || s.name,
+            completed_parts: completedCount,
+            total_parts: totalJuz,
+            percentage: `${percentage}%`,
+            parts_list: sardList,
+            next_booking: nextBooking,
+            advice: completedCount === 0 ? 'لم تبدأ بالسرد بعد — سجّل حجزك!' :
+                completedCount >= 25 ? `ما شاء الله! بقي ${totalJuz - completedCount} أجزاء فقط 🌟` :
+                    `أكملت ${completedCount} جزء — واصل! 💪`
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب بيانات السرد" });
+    }
+}
+
+// ─── Tool: get_student_exams ───
+async function tool_get_student_exams({ student_id }) {
+    const ck = `exams_${student_id}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const snap = await db.collection('exams')
+            .where('studentId', '==', student_id)
+            .get();
+
+        const exams = [];
+        snap.forEach(doc => exams.push(doc.data()));
+        exams.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+        if (exams.length === 0) return JSON.stringify({ message: "لا توجد اختبارات مسجلة" });
+
+        const byType = {};
+        exams.forEach(e => {
+            const type = e.type === 'quran-oral' ? 'شفهي' : e.type === 'tajweed-written' ? 'تحريري' : 'قاعدة';
+            if (!byType[type]) byType[type] = { scores: [], count: 0 };
+            byType[type].scores.push(Number(e.score || 0));
+            byType[type].count++;
+        });
+
+        const averages = Object.entries(byType).map(([type, data]) => ({
+            type,
+            count: data.count,
+            avg: `${Math.round(data.scores.reduce((a, b) => a + b, 0) / data.count)}/50`,
+            latest: data.scores[0],
+        }));
+
+        const result = JSON.stringify({
+            total_exams: exams.length,
+            by_type: averages,
+            latest: exams.slice(0, 5).map(e => ({
+                type: e.type === 'quran-oral' ? 'شفهي' : e.type === 'tajweed-written' ? 'تحريري' : 'قاعدة',
+                score: `${e.score}/50`,
+                title: e.title || '',
+                date: e.date,
+            })),
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب الاختبارات" });
+    }
+}
+
+// ─── Tool: get_student_behavior ───
+async function tool_get_student_behavior({ student_id }) {
+    const ck = `behavior_${student_id}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const [studentDoc, behaviorSnap] = await Promise.all([
+            db.collection('students').doc(student_id).get(),
+            db.collection('behavior_records')
+                .where('studentId', '==', student_id)
+                .orderBy('createdAt', 'desc')
+                .limit(20)
+                .get(),
+        ]);
+
+        const behaviorPoints = studentDoc.exists ? (studentDoc.data().behaviorPoints || 0) : 0;
+
+        let positive = 0, negative = 0;
+        const recent = [];
+        behaviorSnap.forEach(doc => {
+            const d = doc.data();
+            if (d.isPositive) positive++; else negative++;
+            if (recent.length < 5) {
+                recent.push({
+                    type: d.isPositive ? 'إيجابي 👍' : 'سلبي 👎',
+                    category: d.category,
+                    note: d.note || null,
+                    date: d.date || null,
+                });
+            }
+        });
+
+        const result = JSON.stringify({
+            behavior_points: behaviorPoints,
+            positive_count: positive,
+            negative_count: negative,
+            net_score: positive - negative,
+            recent_records: recent,
+            assessment: positive > negative * 2 ? 'سلوك ممتاز! 🌟' :
+                positive > negative ? 'سلوك جيد 👍' :
+                    negative > positive ? 'يحتاج تحسين ⚠️' : 'متوازن',
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب سجل السلوك" });
+    }
+}
+
+// ─── Tool: get_student_excuses ───
+async function tool_get_student_excuses({ student_id }) {
+    const ck = `excuses_${student_id}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const snap = await db.collection('leave_requests')
+            .where('studentId', '==', student_id)
+            .orderBy('createdAt', 'desc')
+            .limit(5)
+            .get();
+
+        if (snap.empty) return JSON.stringify({ message: "لا توجد طلبات إذن" });
+
+        const requests = [];
+        snap.forEach(doc => {
+            const d = doc.data();
+            const statusMap = { pending: 'معلّق ⏳', approved: 'مقبول ✅', rejected: 'مرفوض ❌' };
+            requests.push({
+                reason: d.reason,
+                status: statusMap[d.status] || d.status,
+                date: d.createdAt?.toDate?.()?.toLocaleDateString('en-CA') || 'غير محدد',
+                rejection_reason: d.rejectionReason || null,
+            });
+        });
+
+        const pending = requests.filter(r => r.status.includes('معلّق')).length;
+
+        const result = JSON.stringify({
+            total: requests.length,
+            pending_count: pending,
+            requests,
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب طلبات الإذن" });
+    }
+}
+
+// ─── Tool: get_leaderboard ───
+async function tool_get_leaderboard({ student_id }) {
+    const ck = `leaderboard_${student_id}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const snap = await db.collection('students')
+            .where('stars', '>', 0)
+            .orderBy('stars', 'desc')
+            .limit(10)
+            .get();
+
+        const top10 = [];
+        let myRank = null;
+        let rank = 0;
+
+        snap.forEach(doc => {
+            rank++;
+            const d = doc.data();
+            top10.push({
+                rank,
+                name: d.fullName || d.name || '?',
+                stars: d.stars || 0,
+            });
+            if (doc.id === student_id) myRank = rank;
+        });
+
+        // If student not in top 10, find their rank
+        if (!myRank) {
+            const studentDoc = await db.collection('students').doc(student_id).get();
+            if (studentDoc.exists) {
+                const myStars = studentDoc.data().stars || 0;
+                const aboveMe = await db.collection('students')
+                    .where('stars', '>', myStars)
+                    .get();
+                myRank = aboveMe.size + 1;
+            }
+        }
+
+        const result = JSON.stringify({
+            top_10: top10,
+            my_rank: myRank || 'غير مصنّف',
+            my_stars: top10.find(t => t.rank === myRank)?.stars || null,
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب لوحة الشرف" });
+    }
+}
+
+// ─── Tool: get_student_certificates ───
+async function tool_get_student_certificates({ student_id }) {
+    const ck = `certs_${student_id}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const snap = await db.collection('certificates')
+            .where('studentId', '==', student_id)
+            .get();
+
+        const certs = [];
+        snap.forEach(doc => {
+            const d = doc.data();
+            certs.push({ title: d.title, date: d.date || null });
+        });
+        certs.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+        const result = JSON.stringify({
+            total: certs.length,
+            certificates: certs,
+            message: certs.length === 0 ? 'لا توجد شهادات بعد — واصل التميز!' : `حصلت على ${certs.length} شهادة تكريم 🎖️`
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب الشهادات" });
+    }
+}
+
+// ═══════════════════════════════════════════════
+// NEW TOOL IMPLEMENTATIONS — Teacher Tools
+// ═══════════════════════════════════════════════
+
+// ─── Tool: get_student_behavior_report (Teacher) ───
+async function tool_get_student_behavior_report({ teacher_id, student_name }) {
+    try {
+        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+
+        const halaqaId = teacherDoc.data().halaqaId;
+        if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
+
+        const studentsSnap = await db.collection('students').where('halaqaId', '==', halaqaId).get();
+
+        const studentMap = {};
+        const studentIds = [];
+        studentsSnap.forEach(doc => {
+            studentMap[doc.id] = doc.data().fullName || doc.data().name || '?';
+            studentIds.push(doc.id);
+        });
+
+        // If specific student requested, filter
+        if (student_name) {
+            const searchLower = student_name.toLowerCase().trim();
+            const filtered = studentIds.filter(id =>
+                studentMap[id].toLowerCase().includes(searchLower)
+            );
+            if (filtered.length === 0) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}"` });
+
+            // Get behavior for matched students
+            const behaviorSnap = await db.collection('behavior_records')
+                .where('studentId', 'in', filtered.slice(0, 10))
+                .orderBy('createdAt', 'desc')
+                .limit(20)
+                .get();
+
+            const records = [];
+            behaviorSnap.forEach(doc => {
+                const d = doc.data();
+                records.push({
+                    student: d.studentName || studentMap[d.studentId] || '?',
+                    type: d.isPositive ? 'إيجابي 👍' : 'سلبي 👎',
+                    category: d.category,
+                    note: d.note || null,
+                    date: d.date || null,
+                });
+            });
+
+            return JSON.stringify({ student: student_name, records, total: records.length });
+        }
+
+        // All halaqa students behavior summary
+        const summaryIds = studentIds.slice(0, 10);
+        const behaviorSnap = summaryIds.length > 0
+            ? await db.collection('behavior_records')
+                .where('studentId', 'in', summaryIds)
+                .orderBy('createdAt', 'desc')
+                .limit(50)
+                .get()
+            : { forEach: () => { } };
+
+        const perStudent = {};
+        behaviorSnap.forEach(doc => {
+            const d = doc.data();
+            if (!perStudent[d.studentId]) perStudent[d.studentId] = { name: studentMap[d.studentId] || '?', positive: 0, negative: 0 };
+            if (d.isPositive) perStudent[d.studentId].positive++; else perStudent[d.studentId].negative++;
+        });
+
+        const summary = Object.values(perStudent).map(s => ({
+            name: s.name,
+            positive: s.positive,
+            negative: s.negative,
+            assessment: s.negative > s.positive ? '⚠️' : '✅',
+        }));
+
+        const needsAttention = summary.filter(s => s.assessment === '⚠️');
+
+        return JSON.stringify({
+            halaqa_summary: summary,
+            needs_attention: needsAttention,
+            students_with_records: summary.length,
+            total_students: studentIds.length,
+        });
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب تقرير السلوك" });
+    }
+}
+
+// ─── Tool: get_halaqa_attendance_comparison (Teacher) ───
+async function tool_get_halaqa_attendance_comparison({ teacher_id, period = 'month' }) {
+    try {
+        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+
+        const halaqaId = teacherDoc.data().halaqaId;
+        if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
+
+        const { start, end, label } = getDateRange(period);
+
+        const attSnap = await db.collection('attendance')
+            .where('halaqaId', '==', halaqaId)
+            .where('date', '>=', start)
+            .where('date', '<=', end)
+            .get();
+
+        const dayNames = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+        const byDay = {};
+        dayNames.forEach(d => { byDay[d] = { present: 0, absent: 0, total: 0 }; });
+
+        attSnap.forEach(doc => {
+            const d = doc.data();
+            const dateObj = new Date(d.date);
+            const dayName = dayNames[dateObj.getDay()];
+            byDay[dayName].total++;
+            if (d.status === 'present' || d.status === 'sard') byDay[dayName].present++;
+            else if (d.status === 'absent') byDay[dayName].absent++;
+        });
+
+        const comparison = Object.entries(byDay)
+            .filter(([, s]) => s.total > 0)
+            .map(([day, s]) => ({
+                day,
+                present: s.present,
+                absent: s.absent,
+                total: s.total,
+                attendance_rate: `${Math.round((s.present / s.total) * 100)}%`,
+            }))
+            .sort((a, b) => parseInt(b.attendance_rate) - parseInt(a.attendance_rate));
+
+        const worstDay = comparison.length > 0 ? comparison[comparison.length - 1] : null;
+        const bestDay = comparison.length > 0 ? comparison[0] : null;
+
+        return JSON.stringify({
+            period: label,
+            by_day: comparison,
+            best_day: bestDay ? `${bestDay.day} (${bestDay.attendance_rate})` : null,
+            worst_day: worstDay ? `${worstDay.day} (${worstDay.attendance_rate})` : null,
+        });
+    } catch (e) {
+        return JSON.stringify({ error: "فشل مقارنة الحضور" });
+    }
+}
+
+// ─── Tool: get_halaqa_announcements (Teacher) ───
+async function tool_get_halaqa_announcements({ teacher_id }) {
+    try {
+        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+
+        const halaqaId = teacherDoc.data().halaqaId;
+        if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
+
+        const snap = await db.collection('announcements')
+            .where('halaqaId', '==', halaqaId)
+            .orderBy('createdAt', 'desc')
+            .limit(10)
+            .get();
+
+        if (snap.empty) return JSON.stringify({ message: "لا توجد إعلانات" });
+
+        const announcements = [];
+        snap.forEach(doc => {
+            const d = doc.data();
+            announcements.push({
+                text: d.text,
+                teacher: d.teacherName || '',
+                date: d.date || null,
+            });
+        });
+
+        return JSON.stringify({ total: announcements.length, announcements });
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب الإعلانات" });
+    }
+}
+
+// ═══════════════════════════════════════════════
+// NEW TOOL IMPLEMENTATIONS — Admin Tools
+// ═══════════════════════════════════════════════
+
+// ─── Tool: get_leave_requests (Admin) ───
+async function tool_get_leave_requests({ status = 'all' } = {}) {
+    const ck = `leave_${status}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        let query = db.collection('leave_requests').orderBy('createdAt', 'desc').limit(20);
+        if (status && status !== 'all') {
+            query = db.collection('leave_requests').where('status', '==', status).orderBy('createdAt', 'desc').limit(20);
+        }
+
+        const snap = await query.get();
+
+        let pending = 0, approved = 0, rejected = 0;
+        const requests = [];
+        snap.forEach(doc => {
+            const d = doc.data();
+            if (d.status === 'pending') pending++;
+            else if (d.status === 'approved') approved++;
+            else if (d.status === 'rejected') rejected++;
+
+            requests.push({
+                student: d.studentName || '?',
+                reason: d.reason,
+                status: d.status === 'pending' ? 'معلّق ⏳' : d.status === 'approved' ? 'مقبول ✅' : 'مرفوض ❌',
+                date: d.createdAt?.toDate?.()?.toLocaleDateString('en-CA') || 'غير محدد',
+            });
+        });
+
+        const result = JSON.stringify({
+            summary: { pending, approved, rejected, total: requests.length },
+            requests: requests.slice(0, 10),
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب طلبات الإذن" });
+    }
+}
+
+// ─── Tool: get_sard_overview (Admin) ───
+async function tool_get_sard_overview() {
+    const ck = `sard_overview`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    try {
+        const studentsSnap = await db.collection('students').get();
+
+        let studentsWithSard = 0;
+        let totalParts = 0;
+        const topSardists = [];
+
+        studentsSnap.forEach(doc => {
+            const d = doc.data();
+            const sardList = Array.isArray(d.sard) ? d.sard : [];
+            if (sardList.length > 0) {
+                studentsWithSard++;
+                totalParts += sardList.length;
+                topSardists.push({
+                    name: d.fullName || d.name || '?',
+                    parts: sardList.length,
+                    halaqa: d.halaqaName || 'غير محدد',
+                });
+            }
+        });
+
+        topSardists.sort((a, b) => b.parts - a.parts);
+
+        const result = JSON.stringify({
+            total_students: studentsSnap.size,
+            students_with_sard: studentsWithSard,
+            total_parts_completed: totalParts,
+            completion_rate: `${Math.round((studentsWithSard / Math.max(studentsSnap.size, 1)) * 100)}%`,
+            top_sardists: topSardists.slice(0, 10),
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل جلب إحصائيات السرد" });
+    }
+}
+
+// ─── Tool: get_student_management_info (Admin) ───
+async function tool_get_student_management_info({ student_name }) {
+    try {
+        const studentsSnap = await db.collection('students').get();
+        const searchLower = student_name.toLowerCase().trim();
+
+        const matches = [];
+        studentsSnap.forEach(doc => {
+            const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
+            if (name.includes(searchLower)) {
+                matches.push({ data: doc.data(), id: doc.id });
+            }
+        });
+
+        if (matches.length === 0) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}"` });
+
+        if (matches.length > 3) {
+            return JSON.stringify({
+                multiple: true,
+                message: `وجدت ${matches.length} طلاب بهذا الاسم`,
+                students: matches.slice(0, 10).map(m => ({
+                    name: m.data.fullName || m.data.name,
+                    halaqa: m.data.halaqaName || 'غير محدد',
+                })),
+            });
+        }
+
+        // For 1-3 matches, return full info
+        const results = [];
+        for (const match of matches) {
+            const sid = match.id;
+            const s = match.data;
+
+            const { start, end } = getDateRange('year');
+            const [attSnap, progSnap] = await Promise.all([
+                db.collection('attendance').where('studentId', '==', sid).where('date', '>=', start).where('date', '<=', end).get(),
+                db.collection('progress').where('studentId', '==', sid).where('date', '>=', start).where('date', '<=', end).get(),
+            ]);
+
+            let present = 0, absent = 0;
+            attSnap.forEach(doc => {
+                const d = doc.data();
+                if (d.status === 'present' || d.status === 'sard') present++;
+                else if (d.status === 'absent') absent++;
+            });
+
+            let avgTotal = 0;
+            const progs = [];
+            progSnap.forEach(doc => progs.push(doc.data()));
+            if (progs.length > 0) {
+                const sum = progs.reduce((acc, p) =>
+                    acc + Number(p.lessonScore || 0) + Number(p.revisionScore || 0) + Number(p.tilawaScore || 0) + Number(p.homeworkScore || 0), 0);
+                avgTotal = Math.round(sum / progs.length * 10) / 10;
+            }
+
+            const sardList = Array.isArray(s.sard) ? s.sard : [];
+
+            results.push({
+                name: s.fullName || s.name,
+                type: s.type === 'reserve' ? 'احتياط' : 'أساسي',
+                halaqa: s.halaqaName || 'غير محدد',
+                stars: s.stars || 0,
+                behavior_points: s.behaviorPoints || 0,
+                sard_parts: sardList.length,
+                attendance: { present, absent, rate: present + absent > 0 ? `${Math.round((present / (present + absent)) * 100)}%` : 'لا بيانات' },
+                scores: { sessions: progs.length, avg: `${avgTotal}/40` },
+            });
+        }
+
+        return JSON.stringify(results.length === 1 ? results[0] : { students: results });
+    } catch (e) {
+        return JSON.stringify({ error: "فشل البحث عن الطالب" });
+    }
+}
+
+// ─── Tool: get_halaqat_comparison (Admin) ───
+async function tool_get_halaqat_comparison({ period = 'month' } = {}) {
+    const ck = `halaqat_cmp_${period}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
+    const { start, end, label } = getDateRange(period);
+
+    try {
+        const [halaqatSnap, studentsSnap, attSnap, progressSnap] = await Promise.all([
+            db.collection('halaqat').get(),
+            db.collection('students').get(),
+            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
+            db.collection('progress').where('date', '>=', start).where('date', '<=', end).get(),
+        ]);
+
+        const halaqaInfo = {};
+        halaqatSnap.forEach(doc => {
+            halaqaInfo[doc.id] = { name: doc.data().name || doc.id, students: 0, present: 0, absent: 0, totalScores: 0, scoreCount: 0 };
+        });
+
+        studentsSnap.forEach(doc => {
+            const hId = doc.data().halaqaId;
+            if (hId && halaqaInfo[hId]) halaqaInfo[hId].students++;
+        });
+
+        attSnap.forEach(doc => {
+            const d = doc.data();
+            const hId = d.halaqaId;
+            if (hId && halaqaInfo[hId]) {
+                if (d.status === 'present' || d.status === 'sard') halaqaInfo[hId].present++;
+                else if (d.status === 'absent') halaqaInfo[hId].absent++;
+            }
+        });
+
+        progressSnap.forEach(doc => {
+            const d = doc.data();
+            const hId = d.halaqaId;
+            if (hId && halaqaInfo[hId]) {
+                const total = Number(d.lessonScore || 0) + Number(d.revisionScore || 0) + Number(d.tilawaScore || 0) + Number(d.homeworkScore || 0);
+                halaqaInfo[hId].totalScores += total;
+                halaqaInfo[hId].scoreCount++;
+            }
+        });
+
+        const comparison = Object.values(halaqaInfo)
+            .filter(h => h.students > 0)
+            .map(h => {
+                const totalAtt = h.present + h.absent;
+                return {
+                    name: h.name,
+                    students: h.students,
+                    attendance_rate: totalAtt > 0 ? `${Math.round((h.present / totalAtt) * 100)}%` : 'لا بيانات',
+                    avg_score: h.scoreCount > 0 ? `${Math.round(h.totalScores / h.scoreCount * 10) / 10}/40` : 'لا بيانات',
+                    total_sessions: h.scoreCount,
+                };
+            })
+            .sort((a, b) => parseInt(b.attendance_rate) - parseInt(a.attendance_rate));
+
+        const result = JSON.stringify({
+            period: label,
+            halaqat: comparison,
+            best: comparison[0]?.name || null,
+            needs_improvement: comparison.filter(h => parseInt(h.attendance_rate) < 70).map(h => h.name),
+        });
+        setCache(ck, result);
+        return result;
+    } catch (e) {
+        return JSON.stringify({ error: "فشل مقارنة الحلقات" });
+    }
+}
+
 // ─── Tool Router ───
 const TOOL_HANDLERS = {
+    // Common
     get_student_info: tool_get_student_info,
     get_attendance: tool_get_attendance,
     get_scores: tool_get_scores,
+    // Student
+    get_student_sard_progress: tool_get_student_sard_progress,
+    get_student_exams: tool_get_student_exams,
+    get_student_behavior: tool_get_student_behavior,
+    get_student_excuses: tool_get_student_excuses,
+    get_leaderboard: tool_get_leaderboard,
+    get_student_certificates: tool_get_student_certificates,
+    // Teacher
     get_halaqa_overview: tool_get_halaqa_overview,
     get_halaqa_scores_and_behavior: tool_get_halaqa_scores_and_behavior,
     search_student_by_name: tool_search_student_by_name,
     get_smart_alerts: tool_get_smart_alerts,
+    get_student_behavior_report: tool_get_student_behavior_report,
+    get_halaqa_attendance_comparison: tool_get_halaqa_attendance_comparison,
+    get_halaqa_announcements: tool_get_halaqa_announcements,
+    // Admin
     get_academy_overview: tool_get_academy_overview,
     get_academy_alerts: tool_get_academy_alerts,
     get_academy_exams_and_behavior: tool_get_academy_exams_and_behavior,
     get_top_absent_students: tool_get_top_absent_students,
+    get_leave_requests: tool_get_leave_requests,
+    get_sard_overview: tool_get_sard_overview,
+    get_student_management_info: tool_get_student_management_info,
+    get_halaqat_comparison: tool_get_halaqat_comparison,
 };
 
 // ═══════════════════════════════════════════════
@@ -1203,10 +2128,22 @@ export default async function handler(req, res) {
 
     // Input validation
     const safeMessage = message.slice(0, 2000); // limit message length
-    const validRoles = ['student', 'teacher', 'admin'];
+    const validRoles = ['student', 'teacher', 'admin', 'parent'];
     const safeRole = validRoles.includes(role) ? role : 'student';
     if (studentId && typeof studentId !== 'string') return res.status(400).json({ error: 'Invalid studentId' });
     if (teacherId && typeof teacherId !== 'string') return res.status(400).json({ error: 'Invalid teacherId' });
+
+    // For parent role, resolve child's studentId
+    let resolvedStudentId = studentId;
+    if (safeRole === 'parent' && !studentId) {
+        try {
+            const parentDoc = await db.collection('users').doc(teacherId || '').get();
+            if (parentDoc.exists) {
+                const pd = parentDoc.data();
+                resolvedStudentId = pd.studentId || pd.childId || (Array.isArray(pd.childrenIds) ? pd.childrenIds[0] : null);
+            }
+        } catch (_) { /* fallback to null */ }
+    }
 
     try {
         const systemPrompt = PROMPTS[safeRole] || PROMPTS.student;
@@ -1220,9 +2157,10 @@ export default async function handler(req, res) {
         const timeStr = now.toLocaleTimeString('ar-SA', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit' });
 
         let identityHint = `\n[التاريخ: ${todayDate} (${dayName}) | الوقت: ${timeStr}]`;
-        if (role === 'student' && studentId) identityHint += `\n[معرّف الطالب: ${studentId}]`;
-        else if (role === 'teacher' && (teacherId || studentId)) identityHint += `\n[معرّف المعلم: ${teacherId || studentId}]`;
-        else if (role === 'admin') identityHint += `\n[مدير الأكاديمية]`;
+        if (safeRole === 'student' && studentId) identityHint += `\n[معرّف الطالب: ${studentId}]`;
+        else if (safeRole === 'teacher' && (teacherId || studentId)) identityHint += `\n[معرّف المعلم: ${teacherId || studentId}]`;
+        else if (safeRole === 'admin') identityHint += `\n[مدير الأكاديمية]`;
+        else if (safeRole === 'parent' && resolvedStudentId) identityHint += `\n[ولي أمر الطالب | معرّف الطالب: ${resolvedStudentId}]`;
 
         // Build messages
         const messages = [
