@@ -2324,6 +2324,70 @@ async function callGroq(messages, tools, maxRetries = 2) {
 }
 
 // ═══════════════════════════════════════════════
+// SMART TOOL SELECTOR — reduces tools sent to model
+// ═══════════════════════════════════════════════
+
+function selectRelevantTools(allTools, msgLower, role) {
+    // Define keyword → tool name mappings
+    const TOOL_CATEGORIES = {
+        attendance: {
+            keywords: ['حضور', 'غياب', 'متغيب', 'حاضر', 'غائب', 'تسجيل'],
+            tools: ['get_attendance', 'get_halaqa_overview', 'get_academy_overview', 'get_top_absent_students', 'get_halaqa_attendance_comparison'],
+        },
+        scores: {
+            keywords: ['درجات', 'درجة', 'علامات', 'تقييم', 'اداء', 'أداء', 'متوسط', 'نتائج'],
+            tools: ['get_scores', 'get_halaqa_scores_and_behavior', 'get_student_exams', 'get_halaqa_overview'],
+        },
+        behavior: {
+            keywords: ['سلوك', 'سلوكيات', 'انضباط', 'مخالف'],
+            tools: ['get_student_behavior', 'get_student_behavior_report', 'get_behavior_overview', 'get_halaqa_scores_and_behavior'],
+        },
+        search: {
+            keywords: ['ابحث', 'طالب', 'كود', 'رقم', 'اسم', 'صاحب', 'بيانات', 'معلومات', 'ميلاد'],
+            tools: ['search_student_by_name', 'get_student_management_info', 'get_student_info'],
+        },
+        sard: {
+            keywords: ['سرد', 'حفظ', 'مراجعة', 'جزء', 'اجزاء', 'أجزاء'],
+            tools: ['get_student_sard_progress', 'get_sard_overview'],
+        },
+        overview: {
+            keywords: ['احصائيات', 'إحصائيات', 'ملخص', 'تقرير', 'شامل', 'نظرة'],
+            tools: ['get_academy_overview', 'get_academy_alerts', 'get_halaqat_comparison', 'get_halaqa_overview', 'get_smart_alerts'],
+        },
+        admin: {
+            keywords: ['اذن', 'إذن', 'عذر', 'طلب', 'اعذار', 'أعذار', 'مقارنة', 'حلقات', 'تنبيه'],
+            tools: ['get_leave_requests', 'get_halaqat_comparison', 'get_academy_alerts', 'get_halaqa_announcements'],
+        },
+        stars: {
+            keywords: ['نجوم', 'نجمة', 'شهاد', 'ترتيب', 'متميز'],
+            tools: ['get_leaderboard', 'get_student_certificates', 'get_student_info'],
+        },
+    };
+
+    // Find matching categories
+    const matchedToolNames = new Set();
+    for (const [, cat] of Object.entries(TOOL_CATEGORIES)) {
+        if (cat.keywords.some(kw => msgLower.includes(kw))) {
+            cat.tools.forEach(t => matchedToolNames.add(t));
+        }
+    }
+
+    // If numeric-only, it's likely a search
+    if (/^\d{3,}$/.test(msgLower)) {
+        ['search_student_by_name', 'get_student_management_info', 'get_student_info'].forEach(t => matchedToolNames.add(t));
+    }
+
+    // No match? Return empty → caller will fallback to all
+    if (matchedToolNames.size === 0) return [];
+
+    // Always include get_student_info as a base tool
+    matchedToolNames.add('get_student_info');
+
+    // Filter allTools to only matched names
+    return allTools.filter(t => matchedToolNames.has(t.function.name));
+}
+
+// ═══════════════════════════════════════════════
 // HANDLER — Function Calling Loop
 // ═══════════════════════════════════════════════
 
@@ -2361,7 +2425,44 @@ export default async function handler(req, res) {
 
     try {
         const systemPrompt = PROMPTS[safeRole] || PROMPTS.student;
-        const tools = getToolsForRole(safeRole);
+
+        // ── Rate Limiting (10 msgs/min per user) ──
+        const rateLimitKey = `rate_${safeRole}_${studentId || teacherId || 'anon'}`;
+        const rateEntry = _cache.get(rateLimitKey);
+        const now60 = Date.now();
+        if (rateEntry) {
+            const count = rateEntry.data;
+            if (now60 - rateEntry.ts < 60000 && count >= 10) {
+                return res.status(429).json({ error: 'تجاوزت الحد الأقصى للرسائل. انتظر دقيقة ثم حاول مرة أخرى.' });
+            }
+            if (now60 - rateEntry.ts < 60000) {
+                _cache.set(rateLimitKey, { data: count + 1, ts: rateEntry.ts, ttl: 60000 });
+            } else {
+                _cache.set(rateLimitKey, { data: 1, ts: now60, ttl: 60000 });
+            }
+        } else {
+            _cache.set(rateLimitKey, { data: 1, ts: now60, ttl: 60000 });
+        }
+
+        // ── Message Classification ──
+        const msgLower = safeMessage.toLowerCase().trim();
+        const isGeneral = /^(مرحب|هلا|السلام|اهلا|شكر|جزاك|بارك|مع السلامة|باي|شو اخبار)/.test(msgLower)
+            || /^(ما هو|ما هي|ما معنى|اشرح|فسر|عرف|من هو)/.test(msgLower)
+            || /^(دعاء|حديث|اية|آية|سورة|حكم|هل يجوز|ما حكم)/.test(msgLower)
+            || /^(كيف حالك|انت مين|من انت|اسمك|ايش تقدر تسوي)/.test(msgLower);
+
+        // ── Selective Tool Injection ──
+        let tools;
+        if (isGeneral) {
+            tools = []; // No tools → 0 Firestore reads
+            console.log(`💬 [${safeRole}] GENERAL message — no tools`);
+        } else {
+            const allTools = getToolsForRole(safeRole);
+            // Analyze message to send only relevant tools
+            const toolSubset = selectRelevantTools(allTools, msgLower, safeRole);
+            tools = toolSubset.length > 0 ? toolSubset : allTools; // fallback to all if unsure
+            console.log(`🔧 [${safeRole}] Selected ${tools.length}/${allTools.length} tools`);
+        }
 
         // Inject context: identity + current date/time
         const now = new Date();
@@ -2381,7 +2482,7 @@ export default async function handler(req, res) {
             { role: 'system', content: systemPrompt + identityHint }
         ];
 
-        // Add history (last 12)
+        // Add history (last 16)
         if (history && Array.isArray(history)) {
             for (const h of history.slice(-16)) {
                 messages.push({
@@ -2394,13 +2495,11 @@ export default async function handler(req, res) {
         messages.push({ role: 'user', content: safeMessage });
 
         // ── Smart search detection: hint the model to use tools ──
-        if (safeRole === 'admin' || safeRole === 'teacher') {
+        if ((safeRole === 'admin' || safeRole === 'teacher') && !isGeneral) {
             const searchKeywords = ['ابحث', 'كود', 'الكود', 'رقم قومي', 'الرقم القومي', 'رقم هاتف', 'رقم جوال', 'صاحب', 'طالب اسمه', 'معلومات طالب', 'بيانات طالب', 'ميلاد'];
-            const msgLower = safeMessage.toLowerCase();
-            const looksLikeSearch = searchKeywords.some(kw => msgLower.includes(kw)) || /^\d{3,}$/.test(msgLower.trim());
+            const looksLikeSearch = searchKeywords.some(kw => msgLower.includes(kw)) || /^\d{3,}$/.test(msgLower);
 
             if (looksLikeSearch) {
-                // Extract the search value from the message
                 const numericMatch = safeMessage.match(/\d{3,}/);
                 const searchHint = numericMatch
                     ? `[تلميح: استخدم get_student_management_info(student_name="${numericMatch[0]}") للبحث عن هذا الرقم/الكود]`
