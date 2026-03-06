@@ -655,24 +655,48 @@ function getDateRange(period) {
     }
 }
 
-// ─── In-Memory Cache ───
+// ─── Multi-Tier Cache ───
 const _cache = new Map();
-const CACHE_TTL = 60 * 1000; // 1 minute — fresh data for sequential questions
+const CACHE_TTL = 3 * 60 * 1000;           // 3 min — tool results
+const STUDENTS_CACHE_TTL = 10 * 60 * 1000; // 10 min — students collection (rarely changes)
 
 function getCached(key) {
     const entry = _cache.get(key);
-    if (entry && Date.now() - entry.ts < CACHE_TTL) return entry.data;
+    if (entry && Date.now() - entry.ts < entry.ttl) return entry.data;
     _cache.delete(key);
     return null;
 }
 
-function setCache(key, data) {
-    _cache.set(key, { data, ts: Date.now() });
-    if (_cache.size > 100) {
-        // O(1) eviction: delete first (oldest inserted) key
+function setCache(key, data, ttl = CACHE_TTL) {
+    _cache.set(key, { data, ts: Date.now(), ttl });
+    if (_cache.size > 200) {
         const firstKey = _cache.keys().next().value;
         if (firstKey) _cache.delete(firstKey);
     }
+}
+
+// ─── Shared Students Cache (biggest read saver) ───
+let _studentsCache = null;
+let _studentsCacheTs = 0;
+
+async function getCachedStudents() {
+    if (_studentsCache && Date.now() - _studentsCacheTs < STUDENTS_CACHE_TTL) {
+        return _studentsCache;
+    }
+    const snap = await db.collection('students').get();
+    _studentsCache = snap;
+    _studentsCacheTs = Date.now();
+    console.log(`📦 Students cache refreshed: ${snap.size} students`);
+    return snap;
+}
+
+async function getCachedStudentsByHalaqa(halaqaId) {
+    const ck = `students_halaqa_${halaqaId}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+    const snap = await db.collection('students').where('halaqaId', '==', halaqaId).get();
+    setCache(ck, snap, STUDENTS_CACHE_TTL);
+    return snap;
 }
 
 // ─── Tool: get_student_info ───
@@ -1014,10 +1038,10 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
             if (teacherDoc.exists && teacherDoc.data().halaqaId) {
                 studentsSnap = await db.collection('students').where('halaqaId', '==', teacherDoc.data().halaqaId).get();
             } else {
-                studentsSnap = await db.collection('students').get();
+                studentsSnap = await getCachedStudents();
             }
         } else {
-            studentsSnap = await db.collection('students').get();
+            studentsSnap = await getCachedStudents();
         }
 
         const searchLower = student_name.toLowerCase().trim();
@@ -1036,8 +1060,8 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
 
             let matched = false;
 
-            // Match by exact document ID
-            if (docId === searchLower) matched = true;
+            // Match by document ID (exact or partial — code = account ID)
+            if (docId === searchLower || docId.includes(searchLower) || searchLower.includes(docId)) matched = true;
             // Match by student code
             else if (code && (code === searchLower || code.includes(searchLower))) matched = true;
             // Match by national ID (numeric search)
@@ -1172,7 +1196,7 @@ async function tool_get_academy_overview({ date } = {}) {
 
     try {
         const [studentsSnap, halaqatSnap, attSnap] = await Promise.all([
-            db.collection('students').get(),
+            getCachedStudents(),
             db.collection('halaqat').get(),
             db.collection('attendance').where('date', '==', targetDate).get(),
         ]);
@@ -1255,7 +1279,7 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
         // Monthly top absentees
         const studentMap = {};
         const monthlyAbs = {};
-        const studentsSnap = await db.collection('students').get();
+        const studentsSnap = await getCachedStudents();
         studentsSnap.forEach(doc => { studentMap[doc.id] = doc.data().fullName || '?'; });
 
         monthAttSnap.forEach(doc => {
@@ -1362,7 +1386,7 @@ async function tool_get_top_absent_students({ period = 'year', limit = '10' } = 
 
     try {
         const [studentsSnap, attSnap] = await Promise.all([
-            db.collection('students').get(),
+            getCachedStudents(),
             db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
         ]);
 
@@ -1910,7 +1934,7 @@ async function tool_get_sard_overview() {
     if (cached) return cached;
 
     try {
-        const studentsSnap = await db.collection('students').get();
+        const studentsSnap = await getCachedStudents();
 
         let studentsWithSard = 0;
         let totalParts = 0;
@@ -1949,7 +1973,7 @@ async function tool_get_sard_overview() {
 // ─── Tool: get_student_management_info (Admin) ───
 async function tool_get_student_management_info({ student_name }) {
     try {
-        const studentsSnap = await db.collection('students').get();
+        const studentsSnap = await getCachedStudents();
         const searchLower = student_name.toLowerCase().trim();
         const searchWords = searchLower.split(/\s+/).filter(w => w.length > 1);
         const isNumeric = /^\d+$/.test(searchLower);
@@ -1966,7 +1990,7 @@ async function tool_get_student_management_info({ student_name }) {
 
             let matched = false;
 
-            if (docId === searchLower) matched = true;
+            if (docId === searchLower || docId.includes(searchLower) || searchLower.includes(docId)) matched = true;
             else if (code && (code === searchLower || code.includes(searchLower))) matched = true;
             else if (isNumeric && nationalId && nationalId.includes(searchLower)) matched = true;
             else if (isNumeric && phone && phone.includes(searchLower)) matched = true;
@@ -2055,7 +2079,7 @@ async function tool_get_halaqat_comparison({ period = 'month' } = {}) {
     try {
         const [halaqatSnap, studentsSnap, attSnap, progressSnap] = await Promise.all([
             db.collection('halaqat').get(),
-            db.collection('students').get(),
+            getCachedStudents(),
             db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
             db.collection('progress').where('date', '>=', start).where('date', '<=', end).get(),
         ]);
