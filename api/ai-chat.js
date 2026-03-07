@@ -11,6 +11,8 @@
 // No more keyword matching. The AI decides what it needs.
 
 import admin from "firebase-admin";
+import fs from "fs";
+import path from "path";
 
 if (!admin.apps.length) {
     if (!process.env.FIREBASE_PRIVATE_KEY) {
@@ -40,9 +42,9 @@ if (GROQ_API_KEYS.length === 0 && process.env.GROQ_API_KEY) {
 let _keyIndex = 0;
 function getNextKey() {
     if (GROQ_API_KEYS.length === 0) return null;
-    const key = GROQ_API_KEYS[_keyIndex % GROQ_API_KEYS.length];
-    _keyIndex++;
-    return key;
+    // Advance index safely and handle integer overflow gracefully
+    _keyIndex = (_keyIndex + 1) % GROQ_API_KEYS.length;
+    return GROQ_API_KEYS[_keyIndex];
 }
 console.log(`🔑 Loaded ${GROQ_API_KEYS.length} Groq API keys`);
 
@@ -53,40 +55,41 @@ console.log(`🔑 Loaded ${GROQ_API_KEYS.length} Groq API keys`);
 const BASE_RULES = `أنت "روبو" 🤖 — مساعد شخصي ذكي بشخصية ودودة ومحفزة لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
 - تتحدث بالعربية الفصحى البسيطة مع إيموجي مناسب.
 - ردودك مختصرة وذكية. لا إطالة بلا فائدة.
-- أنت مساعد شخصي متخصص في إدارة بيانات الأكاديمية فقط (حضور، غياب، درجات، سلوك، طلاب، حلقات).
+- أنت مساعد شخصي متخصص في إدارة الأكاديمية (حضور، درجات، سلوك، منتدى) ومعلم ديني للإجابة على الفتاوى والتفسير.
 
 ❗ قواعد الرد:
 1. تصرف وكأنك تعرف كل شيء بنفسك. لا تقل "بعد تحليل البيانات" أو "وفقاً للسجلات" أبداً.
 2. عند عرض بيانات، استخدم أرقام محددة ورتّبها بوضوح.
 3. إذا سأل عن "أمس" أو "البارحة" → استخدم date="yesterday". إذا سأل عن "اليوم" → date="today".
-4. لا تقترح فتح المصحف أو تشغيل سور.
-5. إذا لم تجد بيانات → "ما عندي هالمعلومة حالياً".
+4. إذا لم تجد بيانات → "ما عندي هالمعلومة حالياً".
+5. 🕋 إذا سألك المستخدم سؤالاً دينياً (حكم شرعي، تفسير، عقيدة، حديث) ← **يجب** استخدام أداة (get_islamic_knowledge_rag) للبحث في المصادر الشرعية أولاً، ثم أجب بناءً على ما وجدته بطريقة سهلة ومبسطة.
+6. ✍️ التحكم وتنفيذ الأوامر: إذا طلب المعلم تسجيل حضور/غياب استخدم \`mark_student_attendance\`. لخصم/إضافة سلوك استخدم \`add_behavior_record\`. لنشر إعلان ديني أو غيره استخدم \`create_forum_post\`.
 
 🔀 متى تستخدم الأدوات ومتى تُجيب مباشرة:
-- أسئلة عن بيانات محددة (حضور، درجات، سلوك، طلاب، حلقات، اختبارات، سرد، أعذار...) ← استخدم الأدوات.
-- أسئلة عامة عن التطبيق أو كيفية الاستخدام ← أجب مباشرة بدون أدوات.
-- ⛔ أسئلة دينية (فتاوى، أحاديث، آيات، أحكام شرعية، أدعية، تفسير) ← قل: "هذا ليس تخصصي 😊 أنا مساعد شخصي لإدارة بيانات الأكاديمية. للأسئلة الدينية يُرجى استشارة أهل العلم."
-- لا تجب على أي سؤال ديني مهما كان بسيطاً.
+- تنفيذ أوامر الأكاديمية (حضور، درجات، منتدى، سلوك، استعلام بيانات) ← استخدم الأدوات المخصصة.
+- أسئلة دينية وشرعية (فتاوى، القرآن، الأحاديث) ← يجب استخدام get_islamic_knowledge_rag.
+- أسئلة عامة أو دردشة بسيطة ← أجب مباشرة بدون أدوات.
 
 🧠 الذكاء المحادثي (مهم جداً):
-- افهم السياق من الرسائل السابقة. إذا سأل "ومين غاب؟" بعد سؤال عن الحضور → يقصد تفاصيل الغياب.
-- إذا سأل "وسلوكه؟" بعد سؤال عن طالب → يقصد نفس الطالب.
-- إذا قال "وأمس؟" بعد سؤال عن اليوم → يريد نفس البيانات لكن ليوم أمس.
-- لا تكرر نفس الإجابة لأسئلة مختلفة. كل سؤال يحتاج بيانات جديدة بمعاملات مختلفة.
-- استخدم أكثر من أداة معاً للإجابات الشاملة. مثلاً: "تقرير شامل" = overview + alerts + scores.
+- افهم السياق من الرسائل السابقة.
+- استخدم أكثر من أداة معاً للإجابات الشاملة. مثلاً: يمكن استخدام تقرير السلوك وتسجيل غياب في نفس الوقت.
 
 📊 تحليل البيانات:
 - لا تكتفي بعرض الأرقام — حلّل، قارن، استنتج، وانصح.
-- إذا رأيت مشكلة (غياب كثير، درجات منخفضة) ← نبّه تلقائياً.
-- قدّم نصائح عملية مبنية على البيانات.
 
 💬 شخصيتك:
-- كن محفزاً ومشجعاً مع الطلاب.
-- كن مهنياً ومختصراً مع المعلمين.
+- كن محفزاً ومشجعاً مع الطلاب كمعلم دين رؤوف.
+- كن مهنياً ومبسطاً لتنفيذ أوامر الإدارة للمعلمين.
 - كن تحليلياً واستراتيجياً مع المديرين.
-- كن مطمئناً وداعماً مع أولياء الأمور.
+- كن مطمئناً وداعماً بصراحة مع أولياء الأمور.
 
-أرجع دائماً JSON: {"reply": "نص الرد"}`;
+أرجع دائماً ردك بتنسيق JSON حصراً: 
+{
+  "reply": "نص الرد",
+  "action": "(اختياري) ضع 'play_surah' إذا كان المستخدم يريد الاستماع لسورة",
+  "surah": "(اختياري) رقم السورة من 1 إلى 114 إذا كان ال action هو play_surah",
+  "reciterId": "(اختياري) رقم القارئ الافتراضي 7"
+}`;
 
 const PROMPTS = {
     student: `${BASE_RULES}
@@ -229,6 +232,20 @@ function getToolsForRole(role) {
                 }
             }
         },
+        {
+            type: "function",
+            function: {
+                name: "get_islamic_knowledge_rag",
+                description: "البحث في أسئلة الفتاوى والأحكام الشرعية والعقيدة والتفسير والأدعية للإجابة على الطالب بموثوقية",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        query: { type: "string", description: "نص السؤال الديني أو الكلمة المراد تفسيرها للاستعلام عنها" }
+                    },
+                    required: ["query"]
+                }
+            }
+        },
     ];
 
     // ─── Student-specific tools ───
@@ -320,6 +337,57 @@ function getToolsForRole(role) {
     ];
 
     const teacherTools = [
+        {
+            type: "function",
+            function: {
+                name: "mark_student_attendance",
+                description: "تسجيل حضور أو غياب أو إذن لطالب في حلقة المعلم في يوم معين",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        teacher_id: { type: "string", description: "معرّف المعلم (يُضاف تلقائياً)" },
+                        student_name: { type: "string", description: "اسم الطالب المراد أخذ الغياب له" },
+                        status: { type: "string", description: "حالة الحضور: present (حاضر), absent (غائب), excused (عذر/إذن)" },
+                        reason: { type: "string", description: "سبب الغياب في حال status كان absent أو excused (اختياري)" }
+                    },
+                    required: ["student_name", "status"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "add_behavior_record",
+                description: "إضافة سلوك إيجابي أو سلبي (مخالفة/شكر) لطالب",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        teacher_id: { type: "string", description: "معرّف المعلم (يُضاف تلقائياً)" },
+                        student_name: { type: "string", description: "اسم الطالب" },
+                        is_positive: { type: "boolean", description: "صحيح (true) للسلوك الإيجابي/النقاط الموجبة، وخطأ (false) للمخالفة أو الخصم" },
+                        points: { type: "number", description: "عدد النقاط (موجبة دائماً، مثلاً 1 للإيجابي أو 1 للسلبي)" },
+                        reason: { type: "string", description: "وصف السلوك أو السبب (مثال: عدم حفظ، شغب، إجابة ممتازة)" },
+                        category: { type: "string", description: "تصنيف السلوك (أخلاق، أداء، حفظ، تأخير، أخرى). الافتراضي: أخرى" }
+                    },
+                    required: ["student_name", "is_positive", "points", "reason"]
+                }
+            }
+        },
+        {
+            type: "function",
+            function: {
+                name: "create_forum_post",
+                description: "إنشاء ونشر منشور أو إعلان جديد في منتدى الحلقة أو الأكاديمية للمدير",
+                parameters: {
+                    type: "object",
+                    properties: {
+                        teacher_id: { type: "string", description: "معرّف المعلم أو الإدارة" },
+                        text: { type: "string", description: "النص الجذاب للمنشور (يشمل إيموجي وتنسيق) كما تم تصميمه" }
+                    },
+                    required: ["text"]
+                }
+            }
+        },
         {
             type: "function",
             function: {
@@ -867,7 +935,7 @@ async function tool_get_halaqa_overview({ teacher_id, period = 'month' }) {
         if (!halaqaId) return JSON.stringify({ error: "المعلم غير مربوط بحلقة" });
 
         const [studentsSnap, todayAttSnap, monthAttSnap] = await Promise.all([
-            db.collection('students').where('halaqaId', '==', halaqaId).get(),
+            getCachedStudentsByHalaqa(halaqaId),
             db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '==', today).get(),
             db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
         ]);
@@ -952,7 +1020,7 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
         }
 
         const [studentsSnap, progressSnap] = await Promise.all([
-            db.collection('students').where('halaqaId', '==', halaqaId).get(),
+            getCachedStudentsByHalaqa(halaqaId),
             db.collection('progress').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
         ]);
 
@@ -965,11 +1033,12 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
             ? await db.collection('exams').where('monthKey', 'in', monthKeys.slice(0, 30)).get()
             : { forEach: () => { } };
 
-        // Fetch behavior filtered by student IDs in this halaqa (up to 10 per query)
-        const studentIdList = [...studentIds].slice(0, 10);
-        const behaviorSnap = studentIdList.length > 0
-            ? await db.collection('behavior_records').where('studentId', 'in', studentIdList).orderBy('createdAt', 'desc').limit(20).get()
-            : { forEach: () => { } };
+        // Fetch recent behavior for the entire halaqa
+        const behaviorSnap = await db.collection('behavior_records')
+            .where('halaqaId', '==', halaqaId)
+            .orderBy('createdAt', 'desc')
+            .limit(20)
+            .get();
 
         // studentMap and studentIds already built above
 
@@ -1030,6 +1099,10 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
 // ─── Tool: search_student_by_name ───
 // Universal search: by name, national ID, phone, or document ID
 async function tool_search_student_by_name({ teacher_id, student_name }) {
+    const ck = `search_student_${teacher_id}_${student_name}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
     try {
         let studentsSnap;
 
@@ -1142,6 +1215,8 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
                 }))
             }
         });
+        setCache(ck, result);
+        return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل البحث عن الطالب" });
     }
@@ -1252,6 +1327,7 @@ async function tool_get_academy_overview({ date } = {}) {
 
 // ─── Tool: get_academy_alerts (Admin) ───
 async function tool_get_academy_alerts({ period = 'month' } = {}) {
+    if (period === 'year' || period === 'all' || period === 'semester') return JSON.stringify({ error: "لحماية باقة قاعدة البيانات الأساسية من النفاذ السريع، هذا التقرير متاح فقط لفترة شهر (month) أو أقل." });
     const ck = `academy_alerts_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
@@ -1261,7 +1337,8 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
     try {
         const [overview, monthAttSnap, demotionSnap] = await Promise.all([
             tool_get_academy_overview({ date: getTodayStr() }).then(JSON.parse),
-            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
+            // HIGH OPTIMIZATION: Only fetch 'absent' status. Reduces reads from ~11,000 to ~500 per month
+            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).where('status', '==', 'absent').get(),
             db.collection('demotion_alerts').orderBy('createdAt', 'desc').limit(10).get(),
         ]);
 
@@ -1284,10 +1361,8 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
         studentsSnap.forEach(doc => { studentMap[doc.id] = doc.data().fullName || '?'; });
 
         monthAttSnap.forEach(doc => {
-            const d = doc.data();
-            if (d.status === 'absent') {
-                monthlyAbs[d.studentId] = (monthlyAbs[d.studentId] || 0) + 1;
-            }
+            const sid = doc.data().studentId;
+            monthlyAbs[sid] = (monthlyAbs[sid] || 0) + 1;
         });
 
         Object.entries(monthlyAbs)
@@ -1313,7 +1388,7 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
         }
 
         const result = JSON.stringify({ alerts });
-        setCache(ck, result);
+        setCache(ck, result, 2 * 60 * 60 * 1000); // Heavy query: Cache for 2 hours
         return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل جلب التنبيهات" });
@@ -1322,6 +1397,7 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
 
 // ─── Tool: get_academy_exams_and_behavior (Admin) ───
 async function tool_get_academy_exams_and_behavior({ period = 'month' } = {}) {
+    if (period === 'year' || period === 'all' || period === 'semester') return JSON.stringify({ error: "لحماية باقة قاعدة البيانات الأساسية من النفاذ السريع، هذا التقرير متاح فقط لفترة شهر (month) أو أقل." });
     const ck = `academy_eb_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
@@ -1343,7 +1419,7 @@ async function tool_get_academy_exams_and_behavior({ period = 'month' } = {}) {
             monthKeys.length > 0
                 ? db.collection('exams').where('monthKey', 'in', monthKeys.slice(0, 30)).get()
                 : Promise.resolve({ forEach: () => { }, size: 0 }),
-            db.collection('behavior_records').orderBy('createdAt', 'desc').limit(15).get(),
+            db.collection('behavior_records').where('date', '>=', start).where('date', '<=', end).get(),
         ]);
 
         // Exams by type
@@ -1369,7 +1445,7 @@ async function tool_get_academy_exams_and_behavior({ period = 'month' } = {}) {
             exams: { total: examsSnap.size, by_type: exams },
             behavior: { positive, negative, total: positive + negative },
         });
-        setCache(ck, result);
+        setCache(ck, result, 2 * 60 * 60 * 1000); // Heavy query: Cache for 2 hours
         return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل جلب الاختبارات والسلوك" });
@@ -1377,7 +1453,8 @@ async function tool_get_academy_exams_and_behavior({ period = 'month' } = {}) {
 }
 
 // ─── Tool: get_top_absent_students (Admin) ───
-async function tool_get_top_absent_students({ period = 'year', limit = '10' } = {}) {
+async function tool_get_top_absent_students({ period = 'month', limit = '10' } = {}) {
+    if (period === 'year' || period === 'all' || period === 'semester') return JSON.stringify({ error: "لحماية باقة قاعدة البيانات الأساسية من النفاذ السريع، هذا التقرير متاح فقط لفترة شهر (month) أو أقل." });
     const parsedLimit = parseInt(limit) || 10;
     const ck = `top_absent_${period}_${parsedLimit}`;
     const cached = getCached(ck);
@@ -1388,7 +1465,8 @@ async function tool_get_top_absent_students({ period = 'year', limit = '10' } = 
     try {
         const [studentsSnap, attSnap] = await Promise.all([
             getCachedStudents(),
-            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
+            // HIGH OPTIMIZATION: Only fetch 'absent' status
+            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).where('status', '==', 'absent').get(),
         ]);
 
         const studentMap = {};
@@ -1400,11 +1478,9 @@ async function tool_get_top_absent_students({ period = 'year', limit = '10' } = 
         });
 
         const absCount = {};
-        const totalCount = {};
         attSnap.forEach(doc => {
-            const d = doc.data();
-            totalCount[d.studentId] = (totalCount[d.studentId] || 0) + 1;
-            if (d.status === 'absent') absCount[d.studentId] = (absCount[d.studentId] || 0) + 1;
+            const sid = doc.data().studentId;
+            absCount[sid] = (absCount[sid] || 0) + 1;
         });
 
         const ranked = Object.entries(absCount)
@@ -1415,8 +1491,7 @@ async function tool_get_top_absent_students({ period = 'year', limit = '10' } = 
                 name: studentMap[sid] || '?',
                 halaqa: studentHalaqa[sid] || '?',
                 absent_days: count,
-                total_days: totalCount[sid] || count,
-                absence_rate: `${Math.round((count / (totalCount[sid] || 1)) * 100)}%`,
+                notes: 'عدد أيام غيابه خلال هذه الفترة',
             }));
 
         const result = JSON.stringify({
@@ -1424,7 +1499,7 @@ async function tool_get_top_absent_students({ period = 'year', limit = '10' } = 
             total_students_with_absence: Object.keys(absCount).length,
             top_absent: ranked,
         });
-        setCache(ck, result);
+        setCache(ck, result, 2 * 60 * 60 * 1000); // Heavy query: Cache for 2 hours
         return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل جلب ترتيب الغياب" });
@@ -1712,6 +1787,10 @@ async function tool_get_student_certificates({ student_id }) {
 
 // ─── Tool: get_student_behavior_report (Teacher) ───
 async function tool_get_student_behavior_report({ teacher_id, student_name }) {
+    const ck = `behavior_rep_${teacher_id}_${student_name || 'all'}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
     try {
         const teacherDoc = await db.collection('users').doc(teacher_id).get();
         if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
@@ -1719,7 +1798,7 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
         const halaqaId = teacherDoc.data().halaqaId;
         if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
 
-        const studentsSnap = await db.collection('students').where('halaqaId', '==', halaqaId).get();
+        const studentsSnap = await getCachedStudentsByHalaqa(halaqaId);
 
         const studentMap = {};
         const studentIds = [];
@@ -1755,24 +1834,31 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
                 });
             });
 
-            return JSON.stringify({ student: student_name, records, total: records.length });
+            const result = JSON.stringify({ student: student_name, records, total: records.length });
+            setCache(ck, result);
+            return result;
         }
 
         // All halaqa students behavior summary
-        const summaryIds = studentIds.slice(0, 10);
-        const behaviorSnap = summaryIds.length > 0
-            ? await db.collection('behavior_records')
-                .where('studentId', 'in', summaryIds)
-                .orderBy('createdAt', 'desc')
-                .limit(50)
-                .get()
-            : { forEach: () => { } };
+        const behaviorSnap = await db.collection('behavior_records')
+            .where('halaqaId', '==', halaqaId)
+            .orderBy('createdAt', 'desc')
+            .limit(100)
+            .get();
 
         const perStudent = {};
         behaviorSnap.forEach(doc => {
             const d = doc.data();
-            if (!perStudent[d.studentId]) perStudent[d.studentId] = { name: studentMap[d.studentId] || '?', positive: 0, negative: 0 };
-            if (d.isPositive) perStudent[d.studentId].positive++; else perStudent[d.studentId].negative++;
+            const sId = d.studentId;
+            if (!perStudent[sId]) {
+                perStudent[sId] = {
+                    name: d.studentName || studentMap[sId] || '?',
+                    positive: 0,
+                    negative: 0
+                };
+            }
+            if (d.isPositive) perStudent[sId].positive++;
+            else perStudent[sId].negative++;
         });
 
         const summary = Object.values(perStudent).map(s => ({
@@ -1784,12 +1870,14 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
 
         const needsAttention = summary.filter(s => s.assessment === '⚠️');
 
-        return JSON.stringify({
+        const result = JSON.stringify({
             halaqa_summary: summary,
             needs_attention: needsAttention,
             students_with_records: summary.length,
             total_students: studentIds.length,
         });
+        setCache(ck, result);
+        return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل جلب تقرير السلوك" });
     }
@@ -1797,6 +1885,10 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
 
 // ─── Tool: get_halaqa_attendance_comparison (Teacher) ───
 async function tool_get_halaqa_attendance_comparison({ teacher_id, period = 'month' }) {
+    const ck = `halaqa_att_cmp_${teacher_id}_${period}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
     try {
         const teacherDoc = await db.collection('users').doc(teacher_id).get();
         if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
@@ -1839,12 +1931,14 @@ async function tool_get_halaqa_attendance_comparison({ teacher_id, period = 'mon
         const worstDay = comparison.length > 0 ? comparison[comparison.length - 1] : null;
         const bestDay = comparison.length > 0 ? comparison[0] : null;
 
-        return JSON.stringify({
+        const result = JSON.stringify({
             period: label,
             by_day: comparison,
             best_day: bestDay ? `${bestDay.day} (${bestDay.attendance_rate})` : null,
             worst_day: worstDay ? `${worstDay.day} (${worstDay.attendance_rate})` : null,
         });
+        setCache(ck, result);
+        return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل مقارنة الحضور" });
     }
@@ -1852,6 +1946,10 @@ async function tool_get_halaqa_attendance_comparison({ teacher_id, period = 'mon
 
 // ─── Tool: get_halaqa_announcements (Teacher) ───
 async function tool_get_halaqa_announcements({ teacher_id }) {
+    const ck = `halaqa_ann_${teacher_id}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
     try {
         const teacherDoc = await db.collection('users').doc(teacher_id).get();
         if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
@@ -1877,7 +1975,9 @@ async function tool_get_halaqa_announcements({ teacher_id }) {
             });
         });
 
-        return JSON.stringify({ total: announcements.length, announcements });
+        const result = JSON.stringify({ total: announcements.length, announcements });
+        setCache(ck, result);
+        return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل جلب الإعلانات" });
     }
@@ -1973,6 +2073,10 @@ async function tool_get_sard_overview() {
 
 // ─── Tool: get_student_management_info (Admin) ───
 async function tool_get_student_management_info({ student_name }) {
+    const ck = `mgmt_info_${student_name}`;
+    const cached = getCached(ck);
+    if (cached) return cached;
+
     try {
         const studentsSnap = await getCachedStudents();
         const searchLower = student_name.toLowerCase().trim();
@@ -2063,14 +2167,17 @@ async function tool_get_student_management_info({ student_name }) {
             });
         }
 
-        return JSON.stringify(results.length === 1 ? results[0] : { students: results });
+        const result = JSON.stringify(results.length === 1 ? results[0] : { students: results });
+        setCache(ck, result);
+        return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل البحث عن الطالب" });
     }
 }
 
 // ─── Tool: get_halaqat_comparison (Admin) ───
-async function tool_get_halaqat_comparison({ period = 'month' } = {}) {
+async function tool_get_halaqat_comparison({ period = 'week' } = {}) {
+    if (period === 'year' || period === 'all' || period === 'semester' || period === 'month') return JSON.stringify({ error: "هذا التقرير يقرأ يوميات ودرجات الأكاديمية بالكامل (أكثر من 22,000 عملية قراءة إذا كان لشهر). لحماية قاعدة البيانات من الانهيار، مسموح فقط بطلبه لفترة أسبوع (week) أو اليوم (today)." });
     const ck = `halaqat_cmp_${period}`;
     const cached = getCached(ck);
     if (cached) return cached;
@@ -2134,7 +2241,7 @@ async function tool_get_halaqat_comparison({ period = 'month' } = {}) {
             best: comparison[0]?.name || null,
             needs_improvement: comparison.filter(h => parseInt(h.attendance_rate) < 70).map(h => h.name),
         });
-        setCache(ck, result);
+        setCache(ck, result, 2 * 60 * 60 * 1000); // Heavy query: Cache for 2 hours
         return result;
     } catch (e) {
         return JSON.stringify({ error: "فشل مقارنة الحلقات" });
@@ -2143,6 +2250,7 @@ async function tool_get_halaqat_comparison({ period = 'month' } = {}) {
 
 // ─── Tool: get_behavior_overview (Admin) ───
 async function tool_get_behavior_overview({ period = 'month', limit = '10' } = {}) {
+    if (period === 'year' || period === 'all' || period === 'semester') return JSON.stringify({ error: "لحماية باقة قاعدة البيانات الأساسية من النفاذ السريع، هذا التقرير متاح فقط لفترة شهر (month) أو أقل." });
     const ck = `behavior_overview_${period}_${limit}`;
     const cached = getCached(ck);
     if (cached) return cached;
@@ -2221,12 +2329,238 @@ async function tool_get_behavior_overview({ period = 'month', limit = '10' } = {
     }
 }
 
+// ─── Tool: create_forum_post (Teacher/Admin) ───
+async function tool_create_forum_post({ teacher_id, text }) {
+    if (!text) return JSON.stringify({ error: "النص مطلوب" });
+    try {
+        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const tData = teacherDoc.data();
+        const halaqaId = tData.halaqaId;
+        if (!halaqaId && tData.role !== 'admin') return JSON.stringify({ error: "لا توجد حلقة للمعلم" });
+
+        await db.collection('announcements').add({
+            text,
+            teacherName: tData.fullName || tData.name || 'الإدارة',
+            halaqaId: halaqaId || 'public',
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            date: getTodayStr(),
+            role: tData.role || 'teacher'
+        });
+        return JSON.stringify({ success: "تم نشر الإعلان بنجاح في المنتدى" });
+    } catch (e) {
+        return JSON.stringify({ error: "فشل نشر الإعلان" });
+    }
+}
+
+// ─── Tool: mark_student_attendance (Teacher) ───
+async function tool_mark_student_attendance({ teacher_id, student_name, status, reason }) {
+    if (!student_name || !status) return JSON.stringify({ error: "اسم الطالب وحالته مطلوبان" });
+    try {
+        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const tData = teacherDoc.data();
+        const halaqaId = tData.halaqaId;
+
+        // Search for student in this halaqa
+        let snap;
+        if (tData.role !== 'admin' && halaqaId) {
+            snap = await getCachedStudentsByHalaqa(halaqaId);
+        } else {
+            snap = await getCachedStudents();
+        }
+        let matchedStudent = null;
+        const searchWord = student_name.toLowerCase().trim();
+        snap.forEach(doc => {
+            const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
+            if (name.includes(searchWord)) matchedStudent = { id: doc.id, data: doc.data() };
+        });
+
+        if (!matchedStudent) return JSON.stringify({ error: `لم أجد طالب بهذا الاسم (${student_name}) في حلقتك` });
+
+        const dateStr = getTodayStr();
+
+        // Check if attendance already exists today to update instead of add duplicate
+        const existSnap = await db.collection('attendance')
+            .where('studentId', '==', matchedStudent.id)
+            .where('date', '==', dateStr)
+            .get();
+
+        if (!existSnap.empty) {
+            await existSnap.docs[0].ref.update({
+                status: status,
+                reason: reason || null,
+                timestamp: admin.firestore.FieldValue.serverTimestamp()
+            });
+            return JSON.stringify({ success: `تم تعديل حالة حضور ${matchedStudent.data.fullName || matchedStudent.data.name} اليوم لتصبح: ${status}` });
+        }
+
+        await db.collection('attendance').add({
+            studentId: matchedStudent.id,
+            studentName: matchedStudent.data.fullName || matchedStudent.data.name,
+            halaqaId: matchedStudent.data.halaqaId,
+            status: status,
+            reason: reason || null,
+            date: dateStr,
+            timestamp: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        return JSON.stringify({ success: `تم تسجيل ${matchedStudent.data.fullName || matchedStudent.data.name} بنجاح: ${status}` });
+    } catch (e) {
+        return JSON.stringify({ error: "فشل تسجيل الحضور" });
+    }
+}
+
+// ─── Tool: add_behavior_record (Teacher) ───
+async function tool_add_behavior_record({ teacher_id, student_name, is_positive, points, reason, category }) {
+    if (!student_name || points == null || !reason) return JSON.stringify({ error: "بيانات السلوك ناقصة" });
+    try {
+        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const tData = teacherDoc.data();
+        const halaqaId = tData.halaqaId;
+
+        let snap;
+        if (tData.role !== 'admin' && halaqaId) {
+            snap = await getCachedStudentsByHalaqa(halaqaId);
+        } else {
+            snap = await getCachedStudents();
+        }
+        let matchedStudent = null;
+        const searchWord = student_name.toLowerCase().trim();
+        snap.forEach(doc => {
+            const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
+            if (name.includes(searchWord)) matchedStudent = { id: doc.id, data: doc.data() };
+        });
+
+        if (!matchedStudent) return JSON.stringify({ error: `لم أجد طالب بهذا الاسم (${student_name}) في حلقتك` });
+
+        // Add the behavior record
+        await db.collection('behavior_records').add({
+            studentId: matchedStudent.id,
+            studentName: matchedStudent.data.fullName || matchedStudent.data.name,
+            halaqaId: matchedStudent.data.halaqaId,
+            teacherId: teacher_id,
+            teacherName: tData.fullName || tData.name,
+            isPositive: is_positive,
+            points: Math.abs(points),
+            reason: reason,
+            category: category || 'أخرى',
+            date: getTodayStr(),
+            createdAt: admin.firestore.FieldValue.serverTimestamp()
+        });
+
+        // Update student behavior points total
+        const currentPoints = matchedStudent.data.behaviorPoints || 0;
+        const pts = Math.abs(points);
+        const newPoints = is_positive ? currentPoints + pts : currentPoints - pts;
+
+        await db.collection('students').doc(matchedStudent.id).update({
+            behaviorPoints: newPoints
+        });
+
+        const actionText = is_positive ? 'إضافة' : 'خصم';
+        return JSON.stringify({ success: `تم ${actionText} ${pts} نقاط للطالب ${matchedStudent.data.fullName || matchedStudent.data.name}. السبب: ${reason}` });
+    } catch (e) {
+        return JSON.stringify({ error: "فشل تحديث السلوك" });
+    }
+}
+
+// ─── Tool: get_islamic_knowledge_rag (Common) ───
+// A realistic RAG implementation that reads from local academy curriculum texts
+let _ragSourcesCache = null;
+
+function tool_get_islamic_knowledge_rag({ query }) {
+    try {
+        if (!_ragSourcesCache) {
+            _ragSourcesCache = [];
+
+            // Helper to load and split paragraphs only once
+            const loadFile = (filename, label) => {
+                try {
+                    let p = path.join(process.cwd(), 'data', filename);
+                    if (!fs.existsSync(p)) p = path.join(process.cwd(), 'api', 'data', filename);
+                    if (fs.existsSync(p)) {
+                        const content = fs.readFileSync(p, 'utf8');
+                        // Split strictly by empty lines or double newlines to treat paragraphs as separate chunks
+                        const chunks = content.split(/\n\s*\n/);
+                        chunks.forEach(c => {
+                            const trimmed = c.trim();
+                            if (trimmed.length > 20) {
+                                _ragSourcesCache.push({ text: `[المصدر: ${label}]\n${trimmed}`, raw: trimmed });
+                            }
+                        });
+                    }
+                } catch (_) { }
+            };
+
+            // Load files
+            loadFile('azkar.txt', 'الأذكار');
+            loadFile('islamic_fatawa.txt', 'الفتاوى والمنهج');
+            console.log(`📚 RAG Cache Initialized: ${_ragSourcesCache.length} paragraphs loaded into memory.`);
+        }
+
+        let allSources = _ragSourcesCache;
+
+        // Files are already loaded and cached from above logic
+
+        // Extract keywords from query
+        const stopWords = ['هل', 'يجوز', 'ما', 'هو', 'حكم', 'كيف', 'متى', 'أين', 'في', 'من', 'على', 'إلى', 'عن', 'يارب', 'يا'];
+        // Keep Arabic letters, Arabic-Indic numerals, diacritics (tashkeel), English letters, and numbers
+        const queryWords = query.replace(/[^\u0621-\u064A\u064B-\u065F\u0660-\u06690-9a-zA-Z]/g, ' ')
+            .split(/\s+/)
+            .filter(w => w.length > 2 && !stopWords.includes(w));
+
+        // Score paragraphs
+        let scoredChunks = allSources.map(chunk => {
+            let score = 0;
+            queryWords.forEach(qw => {
+                if (chunk.raw.includes(qw)) score += 3; // exact substring match
+                // naive root check (very basic arabic stemming)
+                if (qw.length > 3 && chunk.raw.includes(qw.substring(0, qw.length - 1))) score += 1;
+            });
+            return { ...chunk, score };
+        });
+
+        // Sort by score taking top 4 highly relevant chunks
+        scoredChunks.sort((a, b) => b.score - a.score);
+
+        let limitedText = "";
+        const topChunks = scoredChunks.filter(c => c.score > 0).slice(0, 4);
+
+        if (topChunks.length > 0) {
+            limitedText = topChunks.map(c => c.text).join('\n\n---\n\n');
+        } else {
+            // fallback if no keyword matches, return a mix
+            limitedText = allSources.slice(0, 4).map(c => c.text).join('\n\n---\n\n');
+        }
+
+        // Final safety truncation
+        limitedText = limitedText.substring(0, 6000);
+
+        return JSON.stringify({
+            context: "أنت الآن تجيب على سؤال شرعي أو تفصيل دعاء. استخدم المعلومات التالية المستخرجة من ملف (منهج الأكاديمية / الأذكار) لمساعدة الطالب.",
+            curriculum_text_found: limitedText ? limitedText : "لا يوجد منهج محمل حالياً.",
+            query_received: query,
+            status: "ready_to_answer",
+            directive: "قم بالإجابة بأسلوب تربوي بناءً على المنهج المرفق أعلاه. إذا كان المنهج فارغاً أو لا يحتوي الإجابة، استخدم معرفتك العامة للإجابة شرعياً بطريقة صحيحة ومبسطة."
+        });
+    } catch (e) {
+        return JSON.stringify({
+            error: "فشل قراءة ملف المنهج، يرجى الاعتماد على معرفتك الداخلية للإجابة.",
+            query_received: query,
+            directive: "قم بالإجابة بأسلوب تربوي مبسط يناسب طلاب الأكاديمية مع ذكر الآية أو الحديث إن وجد."
+        });
+    }
+}
+
 // ─── Tool Router ───
 const TOOL_HANDLERS = {
     // Common
     get_student_info: tool_get_student_info,
     get_attendance: tool_get_attendance,
     get_scores: tool_get_scores,
+    get_islamic_knowledge_rag: tool_get_islamic_knowledge_rag,
     // Student
     get_student_sard_progress: tool_get_student_sard_progress,
     get_student_exams: tool_get_student_exams,
@@ -2242,6 +2576,9 @@ const TOOL_HANDLERS = {
     get_student_behavior_report: tool_get_student_behavior_report,
     get_halaqa_attendance_comparison: tool_get_halaqa_attendance_comparison,
     get_halaqa_announcements: tool_get_halaqa_announcements,
+    mark_student_attendance: tool_mark_student_attendance,
+    add_behavior_record: tool_add_behavior_record,
+    create_forum_post: tool_create_forum_post,
     // Admin
     get_academy_overview: tool_get_academy_overview,
     get_academy_alerts: tool_get_academy_alerts,
@@ -2295,9 +2632,10 @@ async function callGroq(messages, tools, maxRetries = 2) {
 
                 if (res.ok) return { success: true, data };
 
-                // Rate limit OR model blocked/forbidden → try next key immediately
-                if ((res.status === 429 || res.status === 403) && totalKeys > 1) {
-                    console.warn(`⚡ Key #${(_keyIndex - 1) % totalKeys + 1} error ${res.status}, switching to next key...`);
+                // Rate limit, token revoked (401), OR model blocked/forbidden (403) → try next key immediately
+                if ([429, 403, 401].includes(res.status) && totalKeys > 1) {
+                    // Safe index logging without negative modulus bugs
+                    console.warn(`⚡ API Key at index ${_keyIndex} failed to auth (Status ${res.status}), instantly rotating to next key...`);
                     break; // break inner retry loop → go to next key
                 }
 
@@ -2332,37 +2670,41 @@ function selectRelevantTools(allTools, msgLower, role) {
     // Define keyword → tool name mappings
     const TOOL_CATEGORIES = {
         attendance: {
-            keywords: ['حضور', 'غياب', 'متغيب', 'حاضر', 'غائب', 'تسجيل'],
-            tools: ['get_attendance', 'get_halaqa_overview', 'get_academy_overview', 'get_top_absent_students', 'get_halaqa_attendance_comparison'],
+            keywords: ['حضور', 'غياب', 'متغيب', 'حاضر', 'غائب', 'تسجيل', 'سجل حضور', 'سجل غياب', 'إذن', 'اعذار', 'عذر', 'غيابات'],
+            tools: ['get_attendance', 'get_halaqa_overview', 'get_academy_overview', 'get_top_absent_students', 'get_halaqa_attendance_comparison', 'mark_student_attendance'],
         },
         scores: {
-            keywords: ['درجات', 'درجة', 'علامات', 'تقييم', 'اداء', 'أداء', 'متوسط', 'نتائج'],
+            keywords: ['درجات', 'درجة', 'علامات', 'تقييم', 'اداء', 'أداء', 'أدائي', 'متوسط', 'نتائج', 'نتيجة'],
             tools: ['get_scores', 'get_halaqa_scores_and_behavior', 'get_student_exams', 'get_halaqa_overview'],
         },
         behavior: {
-            keywords: ['سلوك', 'سلوكيات', 'انضباط', 'مخالف'],
-            tools: ['get_student_behavior', 'get_student_behavior_report', 'get_behavior_overview', 'get_halaqa_scores_and_behavior'],
+            keywords: ['سلوك', 'سلوكيات', 'انضباط', 'مخالف', 'خصم', 'اضافة نظاط', 'إضافة نقاط', 'نقطة', 'نقاط', 'ممتاز'],
+            tools: ['get_student_behavior', 'get_student_behavior_report', 'get_behavior_overview', 'get_halaqa_scores_and_behavior', 'add_behavior_record'],
         },
         search: {
             keywords: ['ابحث', 'طالب', 'كود', 'رقم', 'اسم', 'صاحب', 'بيانات', 'معلومات', 'ميلاد'],
             tools: ['search_student_by_name', 'get_student_management_info', 'get_student_info'],
         },
         sard: {
-            keywords: ['سرد', 'حفظ', 'مراجعة', 'جزء', 'اجزاء', 'أجزاء'],
+            keywords: ['سرد', 'حفظ', 'مراجعة', 'جزء', 'اجزاء', 'أجزاء', 'تقدم'],
             tools: ['get_student_sard_progress', 'get_sard_overview'],
         },
         overview: {
-            keywords: ['احصائيات', 'إحصائيات', 'ملخص', 'تقرير', 'شامل', 'نظرة'],
+            keywords: ['احصائيات', 'إحصائيات', 'ملخص', 'تقرير', 'شامل', 'نظرة', 'متابعة'],
             tools: ['get_academy_overview', 'get_academy_alerts', 'get_halaqat_comparison', 'get_halaqa_overview', 'get_smart_alerts'],
         },
         admin: {
-            keywords: ['اذن', 'إذن', 'عذر', 'طلب', 'اعذار', 'أعذار', 'مقارنة', 'حلقات', 'تنبيه'],
-            tools: ['get_leave_requests', 'get_halaqat_comparison', 'get_academy_alerts', 'get_halaqa_announcements'],
+            keywords: ['عذر', 'طلب', 'اعذار', 'مقارنة', 'تنبيه', 'انشر', 'اعلان', 'إعلان', 'بوست', 'منتدى'],
+            tools: ['get_leave_requests', 'get_halaqat_comparison', 'get_academy_alerts', 'get_halaqa_announcements', 'create_forum_post'],
         },
         stars: {
             keywords: ['نجوم', 'نجمة', 'شهاد', 'ترتيب', 'متميز'],
             tools: ['get_leaderboard', 'get_student_certificates', 'get_student_info'],
         },
+        islamic: {
+            keywords: ['دعاء', 'أدعية', 'حديث', 'أحاديث', 'قرآن', 'آية', 'تفسير', 'حكم', 'شرع', 'فقه', 'هل يجوز', 'عقيدة', 'دين', 'حرام', 'حلال', 'فرض', 'سنة', 'سورة'],
+            tools: ['get_islamic_knowledge_rag'],
+        }
     };
 
     // Find matching categories
@@ -2448,9 +2790,7 @@ export default async function handler(req, res) {
         // ── Message Classification ──
         const msgLower = safeMessage.toLowerCase().trim();
         const isGeneral = /^(مرحب|هلا|السلام|اهلا|شكر|جزاك|بارك|مع السلامة|باي|شو اخبار)/.test(msgLower)
-            || /^(كيف حالك|انت مين|من انت|اسمك|ايش تقدر تسوي)/.test(msgLower)
-            || /^(دعاء|حديث|اية|آية|سورة|حكم|هل يجوز|ما حكم|تفسير|فتوى)/.test(msgLower)
-            || /^(ما هو|ما هي|ما معنى|اشرح|فسر|عرف|من هو)/.test(msgLower);
+            || /^(كيف حالك|انت مين|من انت|اسمك|ايش تقدر تسوي)/.test(msgLower);
 
         // ── Selective Tool Injection ──
         let tools;
@@ -2473,10 +2813,15 @@ export default async function handler(req, res) {
         const timeStr = now.toLocaleTimeString('ar-SA', { timeZone: 'Africa/Cairo', hour: '2-digit', minute: '2-digit' });
 
         let identityHint = `\n[التاريخ: ${todayDate} (${dayName}) | الوقت: ${timeStr}]`;
-        if (safeRole === 'student' && studentId) identityHint += `\n[معرّف الطالب: ${studentId}]`;
-        else if (safeRole === 'teacher' && (teacherId || studentId)) identityHint += `\n[معرّف المعلم: ${teacherId || studentId}]`;
-        else if (safeRole === 'admin') identityHint += `\n[مدير الأكاديمية]`;
-        else if (safeRole === 'parent' && resolvedStudentId) identityHint += `\n[ولي أمر الطالب | معرّف الطالب: ${resolvedStudentId}]`;
+        if (safeRole === 'student') {
+            identityHint += studentId ? `\n[معرّف الطالب: ${studentId}]` : `\n[طالب غير مسجل الدخول]`;
+        } else if (safeRole === 'teacher') {
+            identityHint += teacherId ? `\n[معرّف المعلم: ${teacherId}]` : `\n[معلم غير مسجل الدخول]`;
+        } else if (safeRole === 'admin') {
+            identityHint += `\n[مدير الأكاديمية]`;
+        } else if (safeRole === 'parent') {
+            identityHint += resolvedStudentId ? `\n[ولي أمر الطالب | معرّف الطالب: ${resolvedStudentId}]` : `\n[ولي أمر]`;
+        }
 
         // Build messages
         const messages = [
@@ -2486,9 +2831,13 @@ export default async function handler(req, res) {
         // Add history (last 16)
         if (history && Array.isArray(history)) {
             for (const h of history.slice(-16)) {
+                let safeText = h.text || '';
+                // Protect against malicious payload injection inflating history length
+                if (safeText.length > 2000) safeText = safeText.substring(0, 2000) + '...';
+
                 messages.push({
                     role: h.role === 'user' ? 'user' : 'assistant',
-                    content: h.text || ''
+                    content: safeText
                 });
             }
         }
@@ -2548,20 +2897,27 @@ export default async function handler(req, res) {
                         const effectiveStudentId = resolvedStudentId || studentId;
                         const effectiveTeacherId = teacherId || studentId;
 
-                        if (!fn.name.startsWith('get_academy') && !fn.name.startsWith('get_leave') && !fn.name.startsWith('get_sard_overview') && !fn.name.startsWith('get_halaqat')) {
+                        const adminExemptTools = ['get_academy_overview', 'get_academy_alerts', 'get_academy_exams_and_behavior', 'get_top_absent_students', 'get_leave_requests', 'get_sard_overview', 'get_student_management_info', 'get_halaqat_comparison', 'get_behavior_overview'];
+
+                        if (!adminExemptTools.includes(fn.name)) {
                             // Student-facing tools: inject student_id
                             const needsStudentId = ['get_student_info', 'get_attendance', 'get_scores', 'get_student_sard_progress', 'get_student_exams', 'get_student_behavior', 'get_student_excuses', 'get_leaderboard', 'get_student_certificates'];
                             if (needsStudentId.includes(fn.name) && !args.student_id && effectiveStudentId) {
                                 args.student_id = effectiveStudentId;
                             }
                             // Teacher-facing tools: inject teacher_id
-                            const needsTeacherId = ['get_halaqa_overview', 'get_halaqa_scores_and_behavior', 'search_student_by_name', 'get_smart_alerts', 'get_student_behavior_report', 'get_halaqa_attendance_comparison', 'get_halaqa_announcements'];
+                            const needsTeacherId = ['get_halaqa_overview', 'get_halaqa_scores_and_behavior', 'search_student_by_name', 'get_smart_alerts', 'get_student_behavior_report', 'get_halaqa_attendance_comparison', 'get_halaqa_announcements', 'mark_student_attendance', 'add_behavior_record', 'create_forum_post'];
                             if (needsTeacherId.includes(fn.name) && !args.teacher_id && effectiveTeacherId) {
                                 args.teacher_id = effectiveTeacherId;
                             }
                         }
 
-                        toolResult = await handler_fn(args);
+                        try {
+                            toolResult = await handler_fn(args);
+                        } catch (fnErr) {
+                            console.error(`Tool Execution Error [${fn.name}]:`, fnErr);
+                            toolResult = JSON.stringify({ error: `حدث خطأ داخلي أثناء تنفيذ الأداة ${fn.name}` });
+                        }
                     } else {
                         toolResult = JSON.stringify({ error: `Unknown tool: ${fn.name}` });
                     }
@@ -2592,15 +2948,35 @@ export default async function handler(req, res) {
         // Parse JSON response
         let parsed;
         try {
+            // First try strict parsing
             parsed = JSON.parse(finalResponse);
         } catch {
-            // If AI didn't return JSON, wrap it
-            parsed = { reply: finalResponse };
+            try {
+                // If wrapped in markdown ```json ... ```, extract it
+                const jsonMatch = finalResponse.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+                if (jsonMatch && jsonMatch[1]) {
+                    parsed = JSON.parse(jsonMatch[1]);
+                } else {
+                    // Try to find anything that looks like a JSON object
+                    const braceMatch = finalResponse.match(/\{[\s\S]*\}/);
+                    if (braceMatch) {
+                        parsed = JSON.parse(braceMatch[0]);
+                    } else {
+                        throw new Error('No JSON object found');
+                    }
+                }
+            } catch (e) {
+                // If all parsing fails, wrap the raw text
+                parsed = { reply: finalResponse };
+            }
         }
 
         return res.status(200).json({
             success: true,
-            reply: parsed.reply || finalResponse,
+            reply: parsed.reply || parsed.message || parsed.response || parsed.text || finalResponse,
+            action: parsed.action,
+            surah: parsed.surah,
+            reciterId: parsed.reciterId
         });
 
     } catch (error) {
