@@ -1,4 +1,4 @@
-// api/ai-chat.js
+// api/ai-chat.js — ✅ Migrated to Supabase
 // Groq AI — "روبو" Multi-role assistant with Function Calling
 // Model: Llama 3.3 70B | Architecture: Tool Use (Function Calling)
 //
@@ -10,24 +10,12 @@
 //
 // No more keyword matching. The AI decides what it needs.
 
-import admin from "firebase-admin";
+// ✅ Migrated to Supabase for data access. No Firebase dependency.
 import fs from "fs";
 import path from "path";
+import { getSupabaseAdmin } from "./_utils/auth-admin.js";
 
-if (!admin.apps.length) {
-    if (!process.env.FIREBASE_PRIVATE_KEY) {
-        throw new Error("Missing FIREBASE_PRIVATE_KEY");
-    }
-    admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId: process.env.FIREBASE_PROJECT_ID,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-        }),
-    });
-}
-
-const db = admin.firestore();
+const db = getSupabaseAdmin(); // Supabase client (drop-in variable name kept as 'db' for minimal diff)
 
 // ─── API Key Rotation (supports up to 20 keys) ───
 const GROQ_API_KEYS = [];
@@ -752,20 +740,23 @@ async function getCachedStudents() {
     if (_studentsCache && Date.now() - _studentsCacheTs < STUDENTS_CACHE_TTL) {
         return _studentsCache;
     }
-    const snap = await db.collection('students').get();
-    _studentsCache = snap;
+    const { data, error } = await db.from('students').select('*');
+    if (error) { console.error('getCachedStudents error:', error.message); return []; }
+    _studentsCache = data || [];
     _studentsCacheTs = Date.now();
-    console.log(`📦 Students cache refreshed: ${snap.size} students`);
-    return snap;
+    console.log(`📦 Students cache refreshed: ${_studentsCache.length} students`);
+    return _studentsCache;
 }
 
 async function getCachedStudentsByHalaqa(halaqaId) {
     const ck = `students_halaqa_${halaqaId}`;
     const cached = getCached(ck);
     if (cached) return cached;
-    const snap = await db.collection('students').where('halaqaId', '==', halaqaId).get();
-    setCache(ck, snap, STUDENTS_CACHE_TTL);
-    return snap;
+    const { data, error } = await db.from('students').select('*').eq('halaqaId', halaqaId);
+    if (error) { console.error('getCachedStudentsByHalaqa error:', error.message); return []; }
+    const result = data || [];
+    setCache(ck, result, STUDENTS_CACHE_TTL);
+    return result;
 }
 
 // ─── Tool: get_student_info ───
@@ -775,12 +766,11 @@ async function tool_get_student_info({ student_id }) {
     if (cached) return cached;
 
     try {
-        const doc = await db.collection('students').doc(student_id).get();
-        if (!doc.exists) return JSON.stringify({ error: "الطالب غير موجود" });
+        const { data: s, error: sErr } = await db.from('students').select('*').eq('id', student_id).maybeSingle();
+        if (sErr || !s) return JSON.stringify({ error: "الطالب غير موجود" });
 
-        const s = doc.data();
         const result = JSON.stringify({
-            student_id: doc.id,
+            student_id: student_id,
             name: s.fullName || s.name || 'غير معروف',
             halaqa: s.halaqaName || 'غير محدد',
             type: s.type === 'reserve' ? 'احتياط' : 'أساسي',
@@ -792,7 +782,7 @@ async function tool_get_student_info({ student_id }) {
             gender: s.gender === 'male' ? 'ذكر' : s.gender === 'female' ? 'أنثى' : s.gender || null,
             parent_phone: s.parentPhone || null,
             sard_parts: Array.isArray(s.sard) ? s.sard.length : 0,
-            joined: s.createdAt?.toDate?.()?.toLocaleDateString('en-CA') || null,
+            joined: s.createdAt || null,
         });
         setCache(ck, result);
         return result;
@@ -811,17 +801,13 @@ async function tool_get_attendance({ student_id, period = 'month' }) {
     const { start, end, label } = getDateRange(period);
 
     try {
-        const snap = await db.collection('attendance')
-            .where('studentId', '==', student_id)
-            .where('date', '>=', start)
-            .where('date', '<=', end)
-            .get();
+        const { data: snapData } = await db.from('attendance').select('*').eq('studentId', student_id).gte('date', start).lte('date', end);
 
         let present = 0, absent = 0, excused = 0;
         let todayStatus = 'لم يُسجّل بعد';
 
         snap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (d.status === 'present' || d.status === 'sard') present++;
             else if (d.status === 'absent') absent++;
             else if (d.status === 'excused') excused++;
@@ -856,14 +842,9 @@ async function tool_get_scores({ student_id, period = 'month' }) {
     const { start, end, label } = getDateRange(period);
 
     try {
-        const snap = await db.collection('progress')
-            .where('studentId', '==', student_id)
-            .where('date', '>=', start)
-            .where('date', '<=', end)
-            .get();
+        const { data: progData } = await db.from('progress').select('*').eq('studentId', student_id).gte('date', start).lte('date', end);
 
-        const docs = [];
-        snap.forEach(doc => docs.push(doc.data()));
+        const docs = progData || [];
         docs.sort((a, b) => b.date.localeCompare(a.date));
 
         if (docs.length === 0) {
@@ -927,25 +908,26 @@ async function tool_get_halaqa_overview({ teacher_id, period = 'month' }) {
     const { start, end, label } = getDateRange(period);
 
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
-        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const { data: teacher, error: tErr } = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
+        if (tErr || !teacher) return JSON.stringify({ error: "المعلم غير موجود" });
 
-        const teacher = teacherDoc.data();
         const halaqaId = teacher.halaqaId;
         if (!halaqaId) return JSON.stringify({ error: "المعلم غير مربوط بحلقة" });
 
-        const [studentsSnap, todayAttSnap, monthAttSnap] = await Promise.all([
+        const [studentsSnap, todayAttResult, monthAttResult] = await Promise.all([
             getCachedStudentsByHalaqa(halaqaId),
-            db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '==', today).get(),
-            db.collection('attendance').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
+            db.from('attendance').select('*').eq('halaqaId', halaqaId).eq('date', today),
+            db.from('attendance').select('*').eq('halaqaId', halaqaId).gte('date', start).lte('date', end),
         ]);
+        const todayAttSnap = todayAttResult.data || [];
+        const monthAttSnap = monthAttResult.data || [];
 
         const studentMap = {};
-        studentsSnap.forEach(doc => { studentMap[doc.id] = doc.data().fullName || doc.data().name || 'بدون اسم'; });
+        studentsSnap.forEach(doc => { studentMap[doc.id] = doc.fullName || doc.name || 'بدون اسم'; });
 
         // Today
         const todayStatuses = {};
-        todayAttSnap.forEach(doc => { todayStatuses[doc.data().studentId] = doc.data().status; });
+        todayAttSnap.forEach(doc => { todayStatuses[doc.studentId] = doc.status; });
 
         const absentToday = [], presentToday = [], notRecorded = [];
         studentsSnap.forEach(doc => {
@@ -959,7 +941,7 @@ async function tool_get_halaqa_overview({ teacher_id, period = 'month' }) {
         // Period stats
         const periodStats = {};
         monthAttSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (!studentMap[d.studentId]) return;
             if (!periodStats[d.studentId]) periodStats[d.studentId] = { name: studentMap[d.studentId], present: 0, absent: 0 };
             if (d.status === 'present' || d.status === 'sard') periodStats[d.studentId].present++;
@@ -973,7 +955,7 @@ async function tool_get_halaqa_overview({ teacher_id, period = 'month' }) {
         const result = JSON.stringify({
             teacher_name: teacher.name || teacher.displayName,
             halaqa: teacher.halaqaName || halaqaId,
-            total_students: studentsSnap.size,
+            total_students: studentsSnap.length,
             today: {
                 date: today,
                 present: presentToday,
@@ -1003,10 +985,10 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
     const { start, end, label } = getDateRange(period);
 
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
-        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const { data: teacher, error: tErr } = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
+        if (tErr || !teacher) return JSON.stringify({ error: "المعلم غير موجود" });
 
-        const halaqaId = teacherDoc.data().halaqaId;
+        const halaqaId = teacher.halaqaId;
         if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
 
         // Build month keys that fall within the requested period
@@ -1019,33 +1001,32 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
             cursor.setMonth(cursor.getMonth() + 1);
         }
 
-        const [studentsSnap, progressSnap] = await Promise.all([
+        const [studentsSnap, progressResult] = await Promise.all([
             getCachedStudentsByHalaqa(halaqaId),
-            db.collection('progress').where('halaqaId', '==', halaqaId).where('date', '>=', start).where('date', '<=', end).get(),
+            db.from('progress').select('*').eq('halaqaId', halaqaId).gte('date', start).lte('date', end),
         ]);
+        const progressSnap = progressResult.data || [];
 
         const studentIds = new Set();
         const studentMap = {};
-        studentsSnap.forEach(doc => { studentMap[doc.id] = doc.data().fullName || doc.data().name || '?'; studentIds.add(doc.id); });
+        studentsSnap.forEach(doc => { studentMap[doc.id] = doc.fullName || doc.name || '?'; studentIds.add(doc.id); });
 
         // Fetch exams for all relevant months (Firestore 'in' supports up to 30)
-        const examsSnap = monthKeys.length > 0
-            ? await db.collection('exams').where('monthKey', 'in', monthKeys.slice(0, 30)).get()
-            : { forEach: () => { } };
+        const examsResult = monthKeys.length > 0
+            ? await db.from('exams').select('*').in('monthKey', monthKeys.slice(0, 30))
+            : { data: [] };
+        const examsSnap = examsResult.data || [];
 
         // Fetch recent behavior for the entire halaqa
-        const behaviorSnap = await db.collection('behavior_records')
-            .where('halaqaId', '==', halaqaId)
-            .orderBy('createdAt', 'desc')
-            .limit(20)
-            .get();
+        const { data: behaviorSnap_ } = await db.from('behavior_records').select('*').eq('halaqaId', halaqaId).order('createdAt', { ascending: false }).limit(20);
+        const behaviorSnap = behaviorSnap_ || [];
 
         // studentMap and studentIds already built above
 
         // Latest progress per student
         const latest = {};
         progressSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (!latest[d.studentId] || d.date > latest[d.studentId].date) latest[d.studentId] = d;
         });
 
@@ -1059,7 +1040,7 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
         // Exams for this halaqa
         const exams = [];
         examsSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (studentIds.has(d.studentId)) {
                 exams.push({
                     student: studentMap[d.studentId] || '?',
@@ -1072,7 +1053,7 @@ async function tool_get_halaqa_scores_and_behavior({ teacher_id, period = 'month
         // Behavior
         const behaviors = [];
         behaviorSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (studentIds.has(d.studentId)) {
                 behaviors.push({
                     student: d.studentName,
@@ -1108,9 +1089,10 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
 
         // If teacher_id provided and valid, search within their halaqa first
         if (teacher_id) {
-            const teacherDoc = await db.collection('users').doc(teacher_id).get();
-            if (teacherDoc.exists && teacherDoc.data().halaqaId) {
-                studentsSnap = await db.collection('students').where('halaqaId', '==', teacherDoc.data().halaqaId).get();
+            const { data: teacherData } = await db.from('users').select('halaqaId').eq('id', teacher_id).maybeSingle();
+            if (teacherData && teacherData.halaqaId) {
+                const { data: hStudents } = await db.from('students').select('*').eq('halaqaId', teacherData.halaqaId);
+                studentsSnap = hStudents || [];
             } else {
                 studentsSnap = await getCachedStudents();
             }
@@ -1124,7 +1106,7 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
         const matches = [];
 
         studentsSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const name = (d.fullName || d.name || '').toLowerCase();
             const nationalId = (d.nationalId || '').toLowerCase();
             const phone = (d.parentPhone || '').toLowerCase();
@@ -1176,20 +1158,19 @@ async function tool_search_student_by_name({ teacher_id, student_name }) {
         const today = getTodayStr();
 
         const [attSnap, progSnap] = await Promise.all([
-            db.collection('attendance').where('studentId', '==', foundId).where('date', '>=', start).where('date', '<=', end).get(),
-            db.collection('progress').where('studentId', '==', foundId).where('date', '>=', start).where('date', '<=', end).get(),
+            db.from('attendance').select('*').eq('studentId', foundId).gte('date', start).lte('date', end),
+            db.from('progress').select('*').eq('studentId', foundId).gte('date', start).lte('date', end),
         ]);
 
         let present = 0, absent = 0, todayStatus = 'لم يُسجّل';
         attSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (d.status === 'present' || d.status === 'sard') present++;
             else if (d.status === 'absent') absent++;
             if (d.date === today) todayStatus = d.status;
         });
 
-        const progs = [];
-        progSnap.forEach(doc => progs.push(doc.data()));
+        const progs = [...progSnap];
         progs.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
         let avgTotal = 0;
@@ -1271,27 +1252,29 @@ async function tool_get_academy_overview({ date } = {}) {
     if (cached) return cached;
 
     try {
-        const [studentsSnap, halaqatSnap, attSnap] = await Promise.all([
+        const [studentsSnap, halaqatResult, attResult] = await Promise.all([
             getCachedStudents(),
-            db.collection('halaqat').get(),
-            db.collection('attendance').where('date', '==', targetDate).get(),
+            db.from('halaqat').select('*'),
+            db.from('attendance').select('*').eq('date', targetDate),
         ]);
+        const halaqatSnap = halaqatResult.data || [];
+        const attSnap = attResult.data || [];
 
         let mainCount = 0, reserveCount = 0;
         studentsSnap.forEach(doc => {
-            if (doc.data().type === 'reserve') reserveCount++;
+            if (doc.type === 'reserve') reserveCount++;
             else mainCount++;
         });
 
         const halaqaNames = {};
-        halaqatSnap.forEach(doc => { halaqaNames[doc.id] = doc.data().name || doc.id; });
+        halaqatSnap.forEach(doc => { halaqaNames[doc.id] = doc.name || doc.id; });
 
         let todayPresent = 0, todayAbsent = 0, todayExcused = 0;
         const halaqaToday = {};
         const recordedHalaqas = new Set();
 
         attSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const hName = d.halaqaName || 'غير محدد';
             recordedHalaqas.add(d.halaqaId || hName);
             if (!halaqaToday[hName]) halaqaToday[hName] = { present: 0, absent: 0 };
@@ -1312,8 +1295,8 @@ async function tool_get_academy_overview({ date } = {}) {
 
         const result = JSON.stringify({
             date: targetDate,
-            students: { total: studentsSnap.size, main: mainCount, reserve: reserveCount },
-            halaqat: { total: halaqatSnap.size, names: Object.values(halaqaNames) },
+            students: { total: studentsSnap.length, main: mainCount, reserve: reserveCount },
+            halaqat: { total: halaqatSnap.length, names: Object.values(halaqaNames) },
             attendance: { present: todayPresent, absent: todayAbsent, excused: todayExcused, rate: `${rate}%` },
             halaqa_comparison: halaqaComparison,
             unrecorded_halaqat: unrecorded,
@@ -1335,12 +1318,13 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
     const { start, end } = getDateRange(period);
 
     try {
-        const [overview, monthAttSnap, demotionSnap] = await Promise.all([
+        const [overview, monthAttResult, demotionResult] = await Promise.all([
             tool_get_academy_overview({ date: getTodayStr() }).then(JSON.parse),
-            // HIGH OPTIMIZATION: Only fetch 'absent' status. Reduces reads from ~11,000 to ~500 per month
-            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).where('status', '==', 'absent').get(),
-            db.collection('demotion_alerts').orderBy('createdAt', 'desc').limit(10).get(),
+            db.from('attendance').select('*').gte('date', start).lte('date', end).eq('status', 'absent'),
+            db.from('demotion_alerts').select('*').order('createdAt', { ascending: false }).limit(10),
         ]);
+        const monthAttSnap = monthAttResult.data || [];
+        const demotionSnap = demotionResult.data || [];
 
         const alerts = [];
 
@@ -1358,10 +1342,10 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
         const studentMap = {};
         const monthlyAbs = {};
         const studentsSnap = await getCachedStudents();
-        studentsSnap.forEach(doc => { studentMap[doc.id] = doc.data().fullName || '?'; });
+        studentsSnap.forEach(doc => { studentMap[doc.id] = doc.fullName || '?'; });
 
         monthAttSnap.forEach(doc => {
-            const sid = doc.data().studentId;
+            const sid = doc.studentId;
             monthlyAbs[sid] = (monthlyAbs[sid] || 0) + 1;
         });
 
@@ -1376,7 +1360,7 @@ async function tool_get_academy_alerts({ period = 'month' } = {}) {
         // Demotions
         const demotions = [];
         demotionSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             demotions.push(`${d.studentName || '?'}: ${d.reason || 'غياب متكرر'}`);
         });
         if (demotions.length > 0) {
@@ -1417,15 +1401,15 @@ async function tool_get_academy_exams_and_behavior({ period = 'month' } = {}) {
 
         const [examsSnap, behaviorSnap] = await Promise.all([
             monthKeys.length > 0
-                ? db.collection('exams').where('monthKey', 'in', monthKeys.slice(0, 30)).get()
-                : Promise.resolve({ forEach: () => { }, size: 0 }),
-            db.collection('behavior_records').where('date', '>=', start).where('date', '<=', end).get(),
+                ? db.from('exams').select('*').in('monthKey', monthKeys.slice(0, 30))
+                : Promise.resolve({ data: [] }),
+            db.from('behavior_records').select('*').gte('date', start).lte('date', end),
         ]);
 
         // Exams by type
         const examsByType = {};
         examsSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const type = d.type === 'quran-oral' ? 'شفهي' : d.type === 'tajweed-written' ? 'تحريري' : 'قاعدة';
             if (!examsByType[type]) examsByType[type] = { count: 0, total: 0 };
             examsByType[type].count++;
@@ -1438,11 +1422,11 @@ async function tool_get_academy_exams_and_behavior({ period = 'month' } = {}) {
 
         // Behavior
         let positive = 0, negative = 0;
-        behaviorSnap.forEach(doc => { if (doc.data().isPositive) positive++; else negative++; });
+        behaviorSnap.forEach(doc => { if (doc.isPositive) positive++; else negative++; });
 
         const result = JSON.stringify({
             period: label,
-            exams: { total: examsSnap.size, by_type: exams },
+            exams: { total: examsSnap.length, by_type: exams },
             behavior: { positive, negative, total: positive + negative },
         });
         setCache(ck, result, 2 * 60 * 60 * 1000); // Heavy query: Cache for 2 hours
@@ -1463,23 +1447,23 @@ async function tool_get_top_absent_students({ period = 'month', limit = '10' } =
     const { start, end, label } = getDateRange(period);
 
     try {
-        const [studentsSnap, attSnap] = await Promise.all([
+        const [studentsSnap, attResult2] = await Promise.all([
             getCachedStudents(),
-            // HIGH OPTIMIZATION: Only fetch 'absent' status
-            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).where('status', '==', 'absent').get(),
+            db.from('attendance').select('*').gte('date', start).lte('date', end).eq('status', 'absent'),
         ]);
+        const attSnap = attResult2.data || [];
 
         const studentMap = {};
         const studentHalaqa = {};
         studentsSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             studentMap[doc.id] = d.fullName || d.name || '?';
             studentHalaqa[doc.id] = d.halaqaName || 'غير محدد';
         });
 
         const absCount = {};
         attSnap.forEach(doc => {
-            const sid = doc.data().studentId;
+            const sid = doc.studentId;
             absCount[sid] = (absCount[sid] || 0) + 1;
         });
 
@@ -1517,26 +1501,21 @@ async function tool_get_student_sard_progress({ student_id }) {
     if (cached) return cached;
 
     try {
-        const [studentDoc, bookingSnap] = await Promise.all([
-            db.collection('students').doc(student_id).get(),
-            db.collection('sard_bookings')
-                .where('studentId', '==', student_id)
-                .where('status', '==', 'confirmed')
-                .orderBy('date', 'desc')
-                .limit(1)
-                .get(),
+        const [studentResult, bookingResult] = await Promise.all([
+            db.from('students').select('*').eq('id', student_id).maybeSingle(),
+            db.from('sard_bookings').select('*').eq('studentId', student_id).eq('status', 'confirmed').order('date', { ascending: false }).limit(1),
         ]);
+        const s = studentResult.data;
+        const bookingSnap = bookingResult.data || [];
 
-        if (!studentDoc.exists) return JSON.stringify({ error: "الطالب غير موجود" });
-
-        const s = studentDoc.data();
+        if (!s) return JSON.stringify({ error: "الطالب غير موجود" });
         const sardList = Array.isArray(s.sard) ? s.sard : [];
         const totalJuz = 30;
         const completedCount = sardList.length;
         const percentage = Math.round((completedCount / totalJuz) * 100);
 
         let nextBooking = null;
-        if (!bookingSnap.empty) {
+        if (!(!bookingSnap || bookingSnap.length === 0)) {
             const b = bookingSnap.docs[0].data();
             nextBooking = { date: b.date, slot: b.slot || null, status: b.status };
         }
@@ -1566,12 +1545,9 @@ async function tool_get_student_exams({ student_id }) {
     if (cached) return cached;
 
     try {
-        const snap = await db.collection('exams')
-            .where('studentId', '==', student_id)
-            .get();
+        const { data: examData } = await db.from('exams').select('*').eq('studentId', student_id);
 
-        const exams = [];
-        snap.forEach(doc => exams.push(doc.data()));
+        const exams = examData || [];
         exams.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 
         if (exams.length === 0) return JSON.stringify({ message: "لا توجد اختبارات مسجلة" });
@@ -1616,12 +1592,8 @@ async function tool_get_student_behavior({ student_id }) {
 
     try {
         const [studentDoc, behaviorSnap] = await Promise.all([
-            db.collection('students').doc(student_id).get(),
-            db.collection('behavior_records')
-                .where('studentId', '==', student_id)
-                .orderBy('createdAt', 'desc')
-                .limit(20)
-                .get(),
+            db.from('students').select('*').eq('id', student_id).maybeSingle(),
+            db.from('behavior_records').select('*').eq('studentId', student_id).order('createdAt', { ascending: false }).limit(20),
         ]);
 
         const behaviorPoints = studentDoc.exists ? (studentDoc.data().behaviorPoints || 0) : 0;
@@ -1629,7 +1601,7 @@ async function tool_get_student_behavior({ student_id }) {
         let positive = 0, negative = 0;
         const recent = [];
         behaviorSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (d.isPositive) positive++; else negative++;
             if (recent.length < 5) {
                 recent.push({
@@ -1665,22 +1637,18 @@ async function tool_get_student_excuses({ student_id }) {
     if (cached) return cached;
 
     try {
-        const snap = await db.collection('leave_requests')
-            .where('studentId', '==', student_id)
-            .orderBy('createdAt', 'desc')
-            .limit(5)
-            .get();
+        const { data: snapData } = await db.from('leave_requests').select('*').eq('studentId', student_id).order('createdAt', { ascending: false }).limit(5);
 
-        if (snap.empty) return JSON.stringify({ message: "لا توجد طلبات إذن" });
+        if ((!snap || snap.length === 0)) return JSON.stringify({ message: "لا توجد طلبات إذن" });
 
         const requests = [];
         snap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const statusMap = { pending: 'معلّق ⏳', approved: 'مقبول ✅', rejected: 'مرفوض ❌' };
             requests.push({
                 reason: d.reason,
                 status: statusMap[d.status] || d.status,
-                date: d.createdAt?.toDate?.()?.toLocaleDateString('en-CA') || 'غير محدد',
+                date: d.createdAt || 'غير محدد',
                 rejection_reason: d.rejectionReason || null,
             });
         });
@@ -1706,11 +1674,8 @@ async function tool_get_leaderboard({ student_id }) {
     if (cached) return cached;
 
     try {
-        const snap = await db.collection('students')
-            .where('stars', '>', 0)
-            .orderBy('stars', 'desc')
-            .limit(10)
-            .get();
+        const { data: snapData } = await db.from('students').select('id, fullName, name, stars').gt('stars', 0).order('stars', { ascending: false }).limit(10);
+        const snap = snapData || [];
 
         const top10 = [];
         let myRank = null;
@@ -1718,7 +1683,7 @@ async function tool_get_leaderboard({ student_id }) {
 
         snap.forEach(doc => {
             rank++;
-            const d = doc.data();
+            const d = doc;
             top10.push({
                 rank,
                 name: d.fullName || d.name || '?',
@@ -1729,13 +1694,11 @@ async function tool_get_leaderboard({ student_id }) {
 
         // If student not in top 10, find their rank
         if (!myRank) {
-            const studentDoc = await db.collection('students').doc(student_id).get();
-            if (studentDoc.exists) {
-                const myStars = studentDoc.data().stars || 0;
-                const aboveMe = await db.collection('students')
-                    .where('stars', '>', myStars)
-                    .get();
-                myRank = aboveMe.size + 1;
+            const { data: myStudent } = await db.from('students').select('stars').eq('id', student_id).maybeSingle();
+            if (myStudent) {
+                const myStars = myStudent.stars || 0;
+                const { count } = await db.from('students').select('id', { count: 'exact', head: true }).gt('stars', myStars);
+                myRank = (count || 0) + 1;
             }
         }
 
@@ -1758,13 +1721,11 @@ async function tool_get_student_certificates({ student_id }) {
     if (cached) return cached;
 
     try {
-        const snap = await db.collection('certificates')
-            .where('studentId', '==', student_id)
-            .get();
+        const { data: snapData } = await db.from('certificates').select('*').eq('studentId', student_id);
 
         const certs = [];
         snap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             certs.push({ title: d.title, date: d.date || null });
         });
         certs.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
@@ -1792,10 +1753,10 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
     if (cached) return cached;
 
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
-        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const { data: teacher, error: tErr } = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
+        if (tErr || !teacher) return JSON.stringify({ error: "المعلم غير موجود" });
 
-        const halaqaId = teacherDoc.data().halaqaId;
+        const halaqaId = teacher.halaqaId;
         if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
 
         const studentsSnap = await getCachedStudentsByHalaqa(halaqaId);
@@ -1803,7 +1764,7 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
         const studentMap = {};
         const studentIds = [];
         studentsSnap.forEach(doc => {
-            studentMap[doc.id] = doc.data().fullName || doc.data().name || '?';
+            studentMap[doc.id] = doc.fullName || doc.name || '?';
             studentIds.push(doc.id);
         });
 
@@ -1816,15 +1777,10 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
             if (filtered.length === 0) return JSON.stringify({ error: `لم أجد طالب باسم "${student_name}"` });
 
             // Get behavior for matched students
-            const behaviorSnap = await db.collection('behavior_records')
-                .where('studentId', 'in', filtered.slice(0, 10))
-                .orderBy('createdAt', 'desc')
-                .limit(20)
-                .get();
+            const { data: behaviorData } = await db.from('behavior_records').select('*').in('studentId', filtered.slice(0, 10)).order('createdAt', { ascending: false }).limit(20);
 
             const records = [];
-            behaviorSnap.forEach(doc => {
-                const d = doc.data();
+            (behaviorData || []).forEach(d => {
                 records.push({
                     student: d.studentName || studentMap[d.studentId] || '?',
                     type: d.isPositive ? 'إيجابي 👍' : 'سلبي 👎',
@@ -1840,15 +1796,11 @@ async function tool_get_student_behavior_report({ teacher_id, student_name }) {
         }
 
         // All halaqa students behavior summary
-        const behaviorSnap = await db.collection('behavior_records')
-            .where('halaqaId', '==', halaqaId)
-            .orderBy('createdAt', 'desc')
-            .limit(100)
-            .get();
+        const behaviorSnap = await db.from('behavior_records').select('*').eq('halaqaId', halaqaId).order('createdAt', { ascending: false }).limit(100);
 
         const perStudent = {};
         behaviorSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const sId = d.studentId;
             if (!perStudent[sId]) {
                 perStudent[sId] = {
@@ -1890,26 +1842,23 @@ async function tool_get_halaqa_attendance_comparison({ teacher_id, period = 'mon
     if (cached) return cached;
 
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
-        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const { data: teacher, error: tErr } = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
+        if (tErr || !teacher) return JSON.stringify({ error: "المعلم غير موجود" });
 
-        const halaqaId = teacherDoc.data().halaqaId;
+        const halaqaId = teacher.halaqaId;
         if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
 
         const { start, end, label } = getDateRange(period);
 
-        const attSnap = await db.collection('attendance')
-            .where('halaqaId', '==', halaqaId)
-            .where('date', '>=', start)
-            .where('date', '<=', end)
-            .get();
+        const { data: attData2 } = await db.from('attendance').select('*').eq('halaqaId', halaqaId).gte('date', start).lte('date', end);
+        const attSnap = attData2 || [];
 
         const dayNames = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
         const byDay = {};
         dayNames.forEach(d => { byDay[d] = { present: 0, absent: 0, total: 0 }; });
 
         attSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const dateObj = new Date(d.date);
             const dayName = dayNames[dateObj.getDay()];
             byDay[dayName].total++;
@@ -1951,23 +1900,19 @@ async function tool_get_halaqa_announcements({ teacher_id }) {
     if (cached) return cached;
 
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
-        if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
+        const { data: teacher, error: tErr } = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
+        if (tErr || !teacher) return JSON.stringify({ error: "المعلم غير موجود" });
 
-        const halaqaId = teacherDoc.data().halaqaId;
+        const halaqaId = teacher.halaqaId;
         if (!halaqaId) return JSON.stringify({ error: "لا توجد حلقة" });
 
-        const snap = await db.collection('announcements')
-            .where('halaqaId', '==', halaqaId)
-            .orderBy('createdAt', 'desc')
-            .limit(10)
-            .get();
+        const { data: snapData } = await db.from('announcements').select('*').eq('halaqaId', halaqaId).order('createdAt', { ascending: false }).limit(10);
 
-        if (snap.empty) return JSON.stringify({ message: "لا توجد إعلانات" });
+        if ((!snap || snap.length === 0)) return JSON.stringify({ message: "لا توجد إعلانات" });
 
         const announcements = [];
         snap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             announcements.push({
                 text: d.text,
                 teacher: d.teacherName || '',
@@ -1994,9 +1939,9 @@ async function tool_get_leave_requests({ status = 'all' } = {}) {
     if (cached) return cached;
 
     try {
-        let query = db.collection('leave_requests').orderBy('createdAt', 'desc').limit(20);
+        let query = db.from('leave_requests').select('*').order('createdAt', { ascending: false }).limit(20);
         if (status && status !== 'all') {
-            query = db.collection('leave_requests').where('status', '==', status).orderBy('createdAt', 'desc').limit(20);
+            query = db.from('leave_requests').select('*').eq('status', status).order('createdAt', { ascending: false }).limit(20);
         }
 
         const snap = await query.get();
@@ -2004,7 +1949,7 @@ async function tool_get_leave_requests({ status = 'all' } = {}) {
         let pending = 0, approved = 0, rejected = 0;
         const requests = [];
         snap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             if (d.status === 'pending') pending++;
             else if (d.status === 'approved') approved++;
             else if (d.status === 'rejected') rejected++;
@@ -2013,7 +1958,7 @@ async function tool_get_leave_requests({ status = 'all' } = {}) {
                 student: d.studentName || '?',
                 reason: d.reason,
                 status: d.status === 'pending' ? 'معلّق ⏳' : d.status === 'approved' ? 'مقبول ✅' : 'مرفوض ❌',
-                date: d.createdAt?.toDate?.()?.toLocaleDateString('en-CA') || 'غير محدد',
+                date: d.createdAt || 'غير محدد',
             });
         });
 
@@ -2042,7 +1987,7 @@ async function tool_get_sard_overview() {
         const topSardists = [];
 
         studentsSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const sardList = Array.isArray(d.sard) ? d.sard : [];
             if (sardList.length > 0) {
                 studentsWithSard++;
@@ -2058,10 +2003,10 @@ async function tool_get_sard_overview() {
         topSardists.sort((a, b) => b.parts - a.parts);
 
         const result = JSON.stringify({
-            total_students: studentsSnap.size,
+            total_students: studentsSnap.length,
             students_with_sard: studentsWithSard,
             total_parts_completed: totalParts,
-            completion_rate: `${Math.round((studentsWithSard / Math.max(studentsSnap.size, 1)) * 100)}%`,
+            completion_rate: `${Math.round((studentsWithSard / Math.max(studentsSnap.length, 1)) * 100)}%`,
             top_sardists: topSardists.slice(0, 10),
         });
         setCache(ck, result);
@@ -2085,7 +2030,7 @@ async function tool_get_student_management_info({ student_name }) {
 
         const matches = [];
         studentsSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const name = (d.fullName || d.name || '').toLowerCase();
             const nationalId = (d.nationalId || '').toLowerCase();
             const phone = (d.parentPhone || '').toLowerCase();
@@ -2130,20 +2075,19 @@ async function tool_get_student_management_info({ student_name }) {
 
             const { start, end } = getDateRange('year');
             const [attSnap, progSnap] = await Promise.all([
-                db.collection('attendance').where('studentId', '==', sid).where('date', '>=', start).where('date', '<=', end).get(),
-                db.collection('progress').where('studentId', '==', sid).where('date', '>=', start).where('date', '<=', end).get(),
+                db.from('attendance').select('*').eq('studentId', sid).gte('date', start).lte('date', end),
+                db.from('progress').select('*').eq('studentId', sid).gte('date', start).lte('date', end),
             ]);
 
             let present = 0, absent = 0;
             attSnap.forEach(doc => {
-                const d = doc.data();
+                const d = doc;
                 if (d.status === 'present' || d.status === 'sard') present++;
                 else if (d.status === 'absent') absent++;
             });
 
             let avgTotal = 0;
-            const progs = [];
-            progSnap.forEach(doc => progs.push(doc.data()));
+            const progs = [...progSnap];
             if (progs.length > 0) {
                 const sum = progs.reduce((acc, p) =>
                     acc + Number(p.lessonScore || 0) + Number(p.revisionScore || 0) + Number(p.tilawaScore || 0) + Number(p.homeworkScore || 0), 0);
@@ -2185,25 +2129,28 @@ async function tool_get_halaqat_comparison({ period = 'week' } = {}) {
     const { start, end, label } = getDateRange(period);
 
     try {
-        const [halaqatSnap, studentsSnap, attSnap, progressSnap] = await Promise.all([
-            db.collection('halaqat').get(),
+        const [halaqatR, studentsSnap, attR3, progressR] = await Promise.all([
+            db.from('halaqat').select('*'),
             getCachedStudents(),
-            db.collection('attendance').where('date', '>=', start).where('date', '<=', end).get(),
-            db.collection('progress').where('date', '>=', start).where('date', '<=', end).get(),
+            db.from('attendance').select('*').gte('date', start).lte('date', end),
+            db.from('progress').select('*').gte('date', start).lte('date', end),
         ]);
+        const halaqatSnap = halaqatR.data || [];
+        const attSnap = attR3.data || [];
+        const progressSnap = progressR.data || [];
 
         const halaqaInfo = {};
         halaqatSnap.forEach(doc => {
-            halaqaInfo[doc.id] = { name: doc.data().name || doc.id, students: 0, present: 0, absent: 0, totalScores: 0, scoreCount: 0 };
+            halaqaInfo[doc.id] = { name: doc.name || doc.id, students: 0, present: 0, absent: 0, totalScores: 0, scoreCount: 0 };
         });
 
         studentsSnap.forEach(doc => {
-            const hId = doc.data().halaqaId;
+            const hId = doc.halaqaId;
             if (hId && halaqaInfo[hId]) halaqaInfo[hId].students++;
         });
 
         attSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const hId = d.halaqaId;
             if (hId && halaqaInfo[hId]) {
                 if (d.status === 'present' || d.status === 'sard') halaqaInfo[hId].present++;
@@ -2212,7 +2159,7 @@ async function tool_get_halaqat_comparison({ period = 'week' } = {}) {
         });
 
         progressSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const hId = d.halaqaId;
             if (hId && halaqaInfo[hId]) {
                 const total = Number(d.lessonScore || 0) + Number(d.revisionScore || 0) + Number(d.tilawaScore || 0) + Number(d.homeworkScore || 0);
@@ -2260,18 +2207,15 @@ async function tool_get_behavior_overview({ period = 'month', limit = '10' } = {
         const maxResults = Math.min(parseInt(limit) || 10, 30);
 
         // Get behavior records in the period
-        const behaviorSnap = await db.collection('behavior_records')
-            .where('date', '>=', start)
-            .where('date', '<=', end)
-            .get();
+        const behaviorSnap = await db.from('behavior_records').select('*').gte('date', start).lte('date', end);
 
-        if (behaviorSnap.empty) return JSON.stringify({ message: "لا توجد سجلات سلوك في هذه الفترة", period: label });
+        if ((!behaviorSnap || behaviorSnap.length === 0)) return JSON.stringify({ message: "لا توجد سجلات سلوك في هذه الفترة", period: label });
 
         const perStudent = {};
         let totalPositive = 0, totalNegative = 0;
 
         behaviorSnap.forEach(doc => {
-            const d = doc.data();
+            const d = doc;
             const sid = d.studentId;
             if (!perStudent[sid]) {
                 perStudent[sid] = {
@@ -2314,7 +2258,7 @@ async function tool_get_behavior_overview({ period = 'month', limit = '10' } = {
 
         const result = JSON.stringify({
             period: label,
-            total_records: behaviorSnap.size,
+            total_records: behaviorSnap.length,
             total_positive: totalPositive,
             total_negative: totalNegative,
             students_with_records: students.length,
@@ -2333,17 +2277,17 @@ async function tool_get_behavior_overview({ period = 'month', limit = '10' } = {
 async function tool_create_forum_post({ teacher_id, text }) {
     if (!text) return JSON.stringify({ error: "النص مطلوب" });
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        const teacherDoc = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
         if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
         const tData = teacherDoc.data();
         const halaqaId = tData.halaqaId;
         if (!halaqaId && tData.role !== 'admin') return JSON.stringify({ error: "لا توجد حلقة للمعلم" });
 
-        await db.collection('announcements').add({
+        await db.from('announcements').insert({
             text,
             teacherName: tData.fullName || tData.name || 'الإدارة',
             halaqaId: halaqaId || 'public',
-            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            createdAt: new Date().toISOString(),
             date: getTodayStr(),
             role: tData.role || 'teacher'
         });
@@ -2357,7 +2301,7 @@ async function tool_create_forum_post({ teacher_id, text }) {
 async function tool_mark_student_attendance({ teacher_id, student_name, status, reason }) {
     if (!student_name || !status) return JSON.stringify({ error: "اسم الطالب وحالته مطلوبان" });
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        const teacherDoc = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
         if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
         const tData = teacherDoc.data();
         const halaqaId = tData.halaqaId;
@@ -2372,7 +2316,7 @@ async function tool_mark_student_attendance({ teacher_id, student_name, status, 
         let matchedStudent = null;
         const searchWord = student_name.toLowerCase().trim();
         snap.forEach(doc => {
-            const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
+            const name = (doc.fullName || doc.name || '').toLowerCase();
             if (name.includes(searchWord)) matchedStudent = { id: doc.id, data: doc.data() };
         });
 
@@ -2381,28 +2325,26 @@ async function tool_mark_student_attendance({ teacher_id, student_name, status, 
         const dateStr = getTodayStr();
 
         // Check if attendance already exists today to update instead of add duplicate
-        const existSnap = await db.collection('attendance')
-            .where('studentId', '==', matchedStudent.id)
-            .where('date', '==', dateStr)
-            .get();
+        const { data: existData } = await db.from('attendance').select('id').eq('studentId', matchedStudent.id).eq('date', dateStr);
+        const existSnap = existData || [];
 
-        if (!existSnap.empty) {
+        if (!(!existSnap || existSnap.length === 0)) {
             await existSnap.docs[0].ref.update({
                 status: status,
                 reason: reason || null,
-                timestamp: admin.firestore.FieldValue.serverTimestamp()
+                timestamp: new Date().toISOString()
             });
             return JSON.stringify({ success: `تم تعديل حالة حضور ${matchedStudent.data.fullName || matchedStudent.data.name} اليوم لتصبح: ${status}` });
         }
 
-        await db.collection('attendance').add({
+        await db.from('attendance').insert({
             studentId: matchedStudent.id,
             studentName: matchedStudent.data.fullName || matchedStudent.data.name,
             halaqaId: matchedStudent.data.halaqaId,
             status: status,
             reason: reason || null,
             date: dateStr,
-            timestamp: admin.firestore.FieldValue.serverTimestamp()
+            timestamp: new Date().toISOString()
         });
 
         return JSON.stringify({ success: `تم تسجيل ${matchedStudent.data.fullName || matchedStudent.data.name} بنجاح: ${status}` });
@@ -2415,7 +2357,7 @@ async function tool_mark_student_attendance({ teacher_id, student_name, status, 
 async function tool_add_behavior_record({ teacher_id, student_name, is_positive, points, reason, category }) {
     if (!student_name || points == null || !reason) return JSON.stringify({ error: "بيانات السلوك ناقصة" });
     try {
-        const teacherDoc = await db.collection('users').doc(teacher_id).get();
+        const teacherDoc = await db.from('users').select('*').eq('id', teacher_id).maybeSingle();
         if (!teacherDoc.exists) return JSON.stringify({ error: "المعلم غير موجود" });
         const tData = teacherDoc.data();
         const halaqaId = tData.halaqaId;
@@ -2429,14 +2371,14 @@ async function tool_add_behavior_record({ teacher_id, student_name, is_positive,
         let matchedStudent = null;
         const searchWord = student_name.toLowerCase().trim();
         snap.forEach(doc => {
-            const name = (doc.data().fullName || doc.data().name || '').toLowerCase();
+            const name = (doc.fullName || doc.name || '').toLowerCase();
             if (name.includes(searchWord)) matchedStudent = { id: doc.id, data: doc.data() };
         });
 
         if (!matchedStudent) return JSON.stringify({ error: `لم أجد طالب بهذا الاسم (${student_name}) في حلقتك` });
 
         // Add the behavior record
-        await db.collection('behavior_records').add({
+        await db.from('behavior_records').insert({
             studentId: matchedStudent.id,
             studentName: matchedStudent.data.fullName || matchedStudent.data.name,
             halaqaId: matchedStudent.data.halaqaId,
@@ -2447,7 +2389,7 @@ async function tool_add_behavior_record({ teacher_id, student_name, is_positive,
             reason: reason,
             category: category || 'أخرى',
             date: getTodayStr(),
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
+            createdAt: new Date().toISOString()
         });
 
         // Update student behavior points total
@@ -2455,12 +2397,10 @@ async function tool_add_behavior_record({ teacher_id, student_name, is_positive,
         const pts = Math.abs(points);
         const newPoints = is_positive ? currentPoints + pts : currentPoints - pts;
 
-        await db.collection('students').doc(matchedStudent.id).update({
-            behaviorPoints: newPoints
-        });
+        await db.from('students').update({ behaviorPoints: newPoints }).eq('id', matchedStudent.id);
 
         const actionText = is_positive ? 'إضافة' : 'خصم';
-        return JSON.stringify({ success: `تم ${actionText} ${pts} نقاط للطالب ${matchedStudent.data.fullName || matchedStudent.data.name}. السبب: ${reason}` });
+        return JSON.stringify({ success: `تم ${actionText} ${pts} نقاط للطالب ${matchedStudent.fullName || matchedStudent.name}. السبب: ${reason}` });
     } catch (e) {
         return JSON.stringify({ error: "فشل تحديث السلوك" });
     }
@@ -2758,9 +2698,8 @@ export default async function handler(req, res) {
     let resolvedStudentId = studentId;
     if (safeRole === 'parent' && !studentId) {
         try {
-            const parentDoc = await db.collection('users').doc(teacherId || '').get();
-            if (parentDoc.exists) {
-                const pd = parentDoc.data();
+            const { data: pd } = await db.from('users').select('*').eq('id', teacherId || '').maybeSingle();
+            if (pd) {
                 resolvedStudentId = pd.studentId || pd.childId || (Array.isArray(pd.childrenIds) ? pd.childrenIds[0] : null);
             }
         } catch (_) { /* fallback to null */ }

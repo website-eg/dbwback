@@ -1,21 +1,10 @@
-import admin from "firebase-admin";
+// api/get-credentials-by-nid.js
+// ✅ Migrated to Supabase (data + auth). No Firebase dependency.
+
 import crypto from "crypto";
+import { getSupabaseAdmin } from "./_utils/auth-admin.js";
 
-// تهيئة Firebase Admin
-if (!admin.apps.length) {
-    if (!process.env.FIREBASE_PRIVATE_KEY) {
-        throw new Error("Missing FIREBASE_PRIVATE_KEY");
-    }
-    admin.initializeApp({
-        credential: admin.credential.cert({
-            projectId: process.env.FIREBASE_PROJECT_ID,
-            clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-            privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-        }),
-    });
-}
-
-const db = admin.firestore();
+const supabase = getSupabaseAdmin();
 
 /**
  * API للحصول على بيانات الدخول بالرقم القومي + تغيير كلمة المرور
@@ -46,21 +35,20 @@ export default async function handler(req, res) {
 
     try {
         // البحث عن الطالب بالرقم القومي
-        const snapshot = await db.collection("students")
-            .where("nationalId", "==", nationalId)
+        const { data: student, error: studentError } = await supabase
+            .from('students')
+            .select('*')
+            .eq('nationalId', nationalId)
             .limit(1)
-            .get();
+            .maybeSingle();
 
-        if (snapshot.empty) {
+        if (studentError || !student) {
             return res.status(404).json({
                 error: "الرقم القومي غير مسجل لدينا"
             });
         }
 
-        const studentDoc = snapshot.docs[0];
-        const student = studentDoc.data();
-
-        // التحقق من وجود الكود على الأقل
+        // التحقق من وجود الكود
         if (!student.code) {
             return res.status(400).json({
                 error: "بيانات الدخول غير مكتملة، يرجى مراجعة الإدارة"
@@ -68,7 +56,7 @@ export default async function handler(req, res) {
         }
 
         // =====================================================
-        // 🔐 تغيير كلمة المرور (لو newPassword موجود)
+        // 🔐 تغيير كلمة المرور
         // =====================================================
         if (newPassword) {
             if (newPassword.length < 6) {
@@ -78,20 +66,25 @@ export default async function handler(req, res) {
             }
 
             const email = `${student.code}@bar-parents.com`;
-            let userRecord;
-            try {
-                userRecord = await admin.auth().getUserByEmail(email);
-            } catch (e) {
+
+            // Find user in Supabase Auth by email
+            const { data: usersList } = await supabase.auth.admin.listUsers({ perPage: 1000 });
+            const authUser = usersList?.users?.find(u => u.email === email);
+
+            if (!authUser) {
                 return res.status(404).json({
                     error: "الحساب غير موجود في نظام المصادقة"
                 });
             }
 
-            // تغيير في Firebase Auth
-            await admin.auth().updateUser(userRecord.uid, { password: newPassword });
+            // Update password in Supabase Auth
+            const { error: updateError } = await supabase.auth.admin.updateUserById(authUser.id, {
+                password: newPassword
+            });
+            if (updateError) throw new Error(updateError.message);
 
-            // تحديث في Firestore
-            await studentDoc.ref.update({ password: newPassword });
+            // Update in students table
+            await supabase.from('students').update({ password: newPassword }).eq('id', student.id);
 
             return res.status(200).json({
                 success: true,
@@ -101,24 +94,28 @@ export default async function handler(req, res) {
         }
 
         // =====================================================
-        // 📋 جلب بيانات الدخول (السلوك الأصلي)
+        // 📋 جلب بيانات الدخول
         // =====================================================
         let loginToken = null;
-        const tokenSnapshot = await db.collection("login_tokens")
-            .where("studentId", "==", studentDoc.id)
-            .where("permanent", "==", true)
-            .limit(1)
-            .get();
 
-        if (!tokenSnapshot.empty) {
-            loginToken = tokenSnapshot.docs[0].id;
+        // Check for existing permanent token
+        const { data: existingTokens } = await supabase
+            .from('login_tokens')
+            .select('id')
+            .eq('studentId', student.id)
+            .eq('permanent', true)
+            .limit(1);
+
+        if (existingTokens && existingTokens.length > 0) {
+            loginToken = existingTokens[0].id;
         } else {
             loginToken = crypto.randomBytes(24).toString("base64url");
 
-            await db.collection("login_tokens").doc(loginToken).set({
-                studentId: studentDoc.id,
+            await supabase.from('login_tokens').insert({
+                id: loginToken,
+                studentId: student.id,
                 studentName: student.fullName || "طالب",
-                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                createdAt: new Date().toISOString(),
                 expiresAt: null,
                 permanent: true,
                 used: false,
@@ -126,10 +123,10 @@ export default async function handler(req, res) {
                 createdBy: "nid-lookup"
             });
 
-            await db.collection("students").doc(studentDoc.id).update({
+            await supabase.from('students').update({
                 lastLoginToken: loginToken,
-                lastTokenCreatedAt: admin.firestore.FieldValue.serverTimestamp()
-            });
+                lastTokenCreatedAt: new Date().toISOString()
+            }).eq('id', student.id);
         }
 
         return res.status(200).json({
@@ -149,4 +146,3 @@ export default async function handler(req, res) {
         });
     }
 }
-

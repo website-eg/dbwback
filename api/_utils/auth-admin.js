@@ -1,27 +1,51 @@
-// api/utils/auth-admin.js
-import admin from "firebase-admin";
+import { createClient } from '@supabase/supabase-js';
 
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-    }),
-  });
+// Initialize Supabase Service Role client for admin tasks
+let supabaseServiceRoleClient = null;
+
+export function getSupabaseAdmin() {
+  if (supabaseServiceRoleClient) return supabaseServiceRoleClient;
+
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables');
+  }
+
+  supabaseServiceRoleClient = createClient(
+    process.env.SUPABASE_URL,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+      },
+    }
+  );
+
+  return supabaseServiceRoleClient;
 }
-
-const db = admin.firestore();
 
 export async function verifyAdminRole(token) {
   try {
-    const decodedToken = await admin.auth().verifyIdToken(token);
-    const userDoc = await db.collection("users").doc(decodedToken.uid).get();
-    if (!userDoc.exists) return false;
-    const role = userDoc.data().role;
-    // يسمح فقط للأدمن أو المعلم بالوصول للأوامر الإدارية
+    const supabase = getSupabaseAdmin();
+    // Verify token and get user
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+
+    if (authError || !user) return false;
+
+    // Check role in users table
+    const { data: userData, error: dbError } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (dbError || !userData) return false;
+
+    const role = userData.role;
+    // Only admin or teacher can access admin commands
     return role === "admin" || role === "teacher";
   } catch (error) {
+    console.error("verifyAdminRole error:", error);
     return false;
   }
 }

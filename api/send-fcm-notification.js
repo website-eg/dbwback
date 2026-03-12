@@ -1,6 +1,10 @@
-import admin from "firebase-admin";
+// api/send-fcm-notification.js
+// ✅ Migrated: Supabase for token cleanup, Firebase Admin ONLY for FCM sending
 
-// Initialize Firebase Admin (Reuse existing logic)
+import admin from "firebase-admin";
+import { getSupabaseAdmin } from "./_utils/auth-admin.js";
+
+// Initialize Firebase Admin (ONLY for FCM)
 if (!admin.apps.length) {
     if (!process.env.FIREBASE_PRIVATE_KEY) {
         throw new Error("Missing FIREBASE_PRIVATE_KEY");
@@ -14,7 +18,7 @@ if (!admin.apps.length) {
     });
 }
 
-const db = admin.firestore();
+const supabase = getSupabaseAdmin();
 
 /**
  * API to send Push Notification via FCM
@@ -33,7 +37,7 @@ export default async function handler(req, res) {
         return res.status(405).json({ error: "Method Not Allowed" });
     }
 
-    // Basic auth: require API key or Firebase auth token
+    // Basic auth
     const apiKey = req.headers['x-api-key'];
     const authToken = req.headers.authorization?.split('Bearer ')[1];
     const expectedKey = process.env.INTERNAL_API_KEY;
@@ -56,7 +60,6 @@ export default async function handler(req, res) {
             },
             data: data || {},
             token: token,
-            // إعدادات Android عالية الأولوية
             android: {
                 priority: "high",
                 notification: {
@@ -69,13 +72,11 @@ export default async function handler(req, res) {
         };
 
         const response = await admin.messaging().send(message);
-
         return res.status(200).json({ success: true, messageId: response });
 
     } catch (error) {
         console.error("FCM Send Error:", error.code, error.message);
 
-        // تنظيف التوكن المنتهي تلقائياً
         const isStaleToken =
             error.code === "messaging/registration-token-not-registered" ||
             error.code === "messaging/invalid-registration-token" ||
@@ -85,17 +86,16 @@ export default async function handler(req, res) {
         if (isStaleToken) {
             console.log(`🗑️ Cleaning stale token: ${token.substring(0, 20)}...`);
             try {
-                // البحث عن المستخدم بالتوكن وحذفه
-                const usersSnap = await db
-                    .collection("users")
-                    .where("fcmToken", "==", token)
-                    .limit(1)
-                    .get();
+                // Find user by FCM token in Supabase and clear it
+                const { data: users } = await supabase
+                    .from('users')
+                    .select('id')
+                    .eq('fcmToken', token)
+                    .limit(1);
 
-                if (!usersSnap.empty) {
-                    const userDoc = usersSnap.docs[0];
-                    await userDoc.ref.update({ fcmToken: admin.firestore.FieldValue.delete() });
-                    console.log(`✅ Removed stale token from user: ${userDoc.id}`);
+                if (users && users.length > 0) {
+                    await supabase.from('users').update({ fcmToken: null }).eq('id', users[0].id);
+                    console.log(`✅ Removed stale token from user: ${users[0].id}`);
                 }
             } catch (cleanupErr) {
                 console.warn("⚠️ Token cleanup failed:", cleanupErr.message);

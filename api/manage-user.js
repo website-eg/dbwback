@@ -1,24 +1,7 @@
-import admin from "firebase-admin";
-import { verifyAdminRole } from "./_utils/auth-admin.js";
-
-// Helper for Lazy Initialization
-function initFirebase() {
-    if (!admin.apps.length) {
-        if (!process.env.FIREBASE_PRIVATE_KEY) {
-            throw new Error("Missing FIREBASE_PRIVATE_KEY");
-        }
-        admin.initializeApp({
-            credential: admin.credential.cert({
-                projectId: process.env.FIREBASE_PROJECT_ID,
-                clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-                privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-            }),
-        });
-    }
-}
+import { verifyAdminRole, getSupabaseAdmin } from "./_utils/auth-admin.js";
 
 /**
- * Unified User Management API
+ * Unified User Management API for Supabase
  * POST /api/manage-user
  * Body: { action: 'delete'|'updateEmail'|'resetPassword', ...params }
  */
@@ -34,8 +17,7 @@ export default async function handler(req, res) {
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
     try {
-        // 4. Init Firebase (Lazy)
-        initFirebase();
+        const supabase = getSupabaseAdmin();
 
         // 🛡️ Security Check
         const authHeader = req.headers.authorization;
@@ -46,14 +28,14 @@ export default async function handler(req, res) {
         const token = authHeader.split("Bearer ")[1];
 
         // Verify token first to get UID
-        let decodedToken;
-        try {
-            decodedToken = await admin.auth().verifyIdToken(token);
-        } catch (e) {
+        const { data: { user }, error: verifyError } = await supabase.auth.getUser(token);
+        if (verifyError || !user) {
             return res.status(401).json({ error: "Invalid Token" });
         }
 
-        const isAuthorized = await verifyAdminRole(token); // Checks if user is actually an admin in DB
+        const decodedUid = user.id;
+
+        const isAuthorized = await verifyAdminRole(token); // Checks if user is an admin or teacher in DB
 
         const { action, uid } = req.body;
         if (!uid) return res.status(400).json({ error: "Missing User ID (uid)" });
@@ -61,31 +43,66 @@ export default async function handler(req, res) {
         // Authorization Logic
         let authorized = false;
         if (isAuthorized) {
-            authorized = true; // Admin can do anything
-        } else if (action === 'resetPassword' && decodedToken.uid === uid) {
+            authorized = true; // Admin/Teacher can do anything
+        } else if (action === 'resetPassword' && decodedUid === uid) {
             authorized = true; // User can reset own password
+        } else if (action === 'updateEmail' && decodedUid === uid) {
+            // Let a user update their own email if needed (for code changes)
+            authorized = true;
         }
 
         if (!authorized) {
             return res.status(403).json({ error: "Forbidden: Unauthorized Action" });
         }
 
+        // === CREATE USER ===
+        if (action === "createUser") {
+            if (!isAuthorized) return res.status(403).json({ error: "Forbidden: Admins Only" });
+
+            const { email, password, fullName } = req.body;
+            if (!email || !password) return res.status(400).json({ error: "Missing email or password" });
+
+            const { data, error } = await supabase.auth.admin.createUser({
+                email,
+                password,
+                email_confirm: true,
+                user_metadata: { name: fullName }
+            });
+
+            if (error) throw new Error(error.message);
+
+            return res.status(200).json({ success: true, uid: data.user.id });
+        }
+
         // === DELETE USER ===
         if (action === "delete") {
             if (!isAuthorized) return res.status(403).json({ error: "Forbidden: Admins Only" });
 
-            await admin.auth().deleteUser(uid);
+            const { error } = await supabase.auth.admin.deleteUser(uid);
+            if (error) throw new Error(error.message);
+
+            // Note: Since we use ON DELETE CASCADE in PostgreSQL for most tables (students, behavior, progress),
+            // deleting from public.users / auth.users will automatically clean up related data.
+            // But if users is not tied directly to auth.users deletion natively by trigger, we should delete from public.users
+            await supabase.from('users').delete().eq('id', uid);
+            await supabase.from('students').delete().eq('id', uid); // just to be safe
+
             return res.status(200).json({ success: true, message: "User deleted" });
         }
 
         // === UPDATE EMAIL ===
         if (action === "updateEmail") {
-            if (!isAuthorized) return res.status(403).json({ error: "Forbidden: Admins Only" });
+            // Note: Only Admins can force an email change for another user.
+            if (!isAuthorized && decodedUid !== uid) return res.status(403).json({ error: "Forbidden" });
 
             const { newEmail } = req.body;
             if (!newEmail) return res.status(400).json({ error: "Missing newEmail" });
 
-            await admin.auth().updateUser(uid, { email: newEmail });
+            const { error } = await supabase.auth.admin.updateUserById(uid, { email: newEmail });
+            if (error) throw new Error(error.message);
+
+            await supabase.from('users').update({ email: newEmail }).eq('id', uid);
+
             return res.status(200).json({ success: true, message: "Email updated" });
         }
 
@@ -95,7 +112,11 @@ export default async function handler(req, res) {
             if (!newPassword || newPassword.length < 6) {
                 return res.status(400).json({ error: "Password must be at least 6 chars" });
             }
-            await admin.auth().updateUser(uid, { password: newPassword });
+            const { error } = await supabase.auth.admin.updateUserById(uid, { password: newPassword });
+            if (error) throw new Error(error.message);
+
+            await supabase.from('users').update({ password: newPassword }).eq('id', uid);
+
             return res.status(200).json({ success: true, message: "Password updated" });
         }
 
