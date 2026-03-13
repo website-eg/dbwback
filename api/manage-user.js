@@ -7,8 +7,19 @@ import { verifyAdminRole, getSupabaseAdmin } from "./_utils/auth-admin.js";
  */
 export default async function handler(req, res) {
     // 1. CORS Headers - ALWAYS FIRST
+    // 1. CORS Headers - ALWAYS FIRST
+    const allowedOrigins = [
+        "https://darbw.netlify.app",
+        "http://localhost:8080",
+        "http://localhost:5173"
+    ];
+    const origin = req.headers.origin;
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader("Access-Control-Allow-Origin", origin);
+    } else {
+        res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app"); // Fallback
+    }
     res.setHeader("Access-Control-Allow-Credentials", true);
-    res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app");
     res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
@@ -38,7 +49,9 @@ export default async function handler(req, res) {
         const isAuthorized = await verifyAdminRole(token); // Checks if user is an admin or teacher in DB
 
         const { action, uid } = req.body;
-        if (!uid) return res.status(400).json({ error: "Missing User ID (uid)" });
+        if (action !== 'createUser' && !uid) {
+            return res.status(400).json({ error: "Missing User ID (uid)" });
+        }
 
         // Authorization Logic
         let authorized = false;
