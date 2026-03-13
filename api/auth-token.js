@@ -1,44 +1,24 @@
-import admin from "firebase-admin";
+import { verifyAdminRole, getSupabaseAdmin } from "./_utils/auth-admin.js";
 import crypto from "crypto";
 
-// Helper for Lazy Initialization
-function initFirebase() {
-    if (!admin.apps.length) {
-        if (!process.env.FIREBASE_PRIVATE_KEY) {
-            throw new Error("Missing FIREBASE_PRIVATE_KEY");
-        }
-        admin.initializeApp({
-            credential: admin.credential.cert({
-                projectId: process.env.FIREBASE_PROJECT_ID,
-                clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-                privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
-            }),
-        });
-    }
-    return admin.firestore();
-}
-
 /**
- * Unified Auth Token API
+ * Unified Auth Token API (Migrated to Supabase)
  * POST /api/auth-token
  * Body: { action: 'generate'|'verify', ...params }
  */
 export default async function handler(req, res) {
-    // 1. CORS Headers - ALWAYS FIRST
+    // 1. CORS Headers
     res.setHeader("Access-Control-Allow-Credentials", true);
-    res.setHeader("Access-Control-Allow-Origin", "https://darbw.netlify.app"); // Or req.headers.origin
+    res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
     // 2. Handle OPTIONS
     if (req.method === "OPTIONS") return res.status(200).end();
-
     if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
     try {
-        // 4. Init Firebase (Lazy)
-        const db = initFirebase();
-
+        const supabase = getSupabaseAdmin();
         const { action } = req.body;
 
         // === GENERATE TOKEN ===
@@ -49,15 +29,10 @@ export default async function handler(req, res) {
                 return res.status(401).json({ error: "Unauthorized: Missing Token" });
             }
             const idToken = authHeader.split("Bearer ")[1];
-            try {
-                const decodedToken = await admin.auth().verifyIdToken(idToken);
-                const userDoc = await db.collection("users").doc(decodedToken.uid).get();
-                const role = userDoc.exists ? userDoc.data().role : null;
-                if (role !== "admin" && role !== "teacher") {
-                    return res.status(403).json({ error: "Forbidden: Admins/Teachers Only" });
-                }
-            } catch (e) {
-                return res.status(401).json({ error: "Invalid Auth Token" });
+
+            const isAuthorized = await verifyAdminRole(idToken);
+            if (!isAuthorized) {
+                return res.status(403).json({ error: "Forbidden: Admins/Teachers Only" });
             }
 
             const { studentId } = req.body;
@@ -66,11 +41,28 @@ export default async function handler(req, res) {
             // Generate Secure Token
             const token = crypto.randomBytes(32).toString("hex");
 
-            // Save to Student Doc
-            await db.collection("students").doc(studentId).update({
-                lastLoginToken: token,
-                tokenCreatedAt: admin.firestore.FieldValue.serverTimestamp()
+            // Save to login_tokens table
+            const { error: tokenErr } = await supabase.from('login_tokens').upsert({
+                id: `token_${studentId}`,
+                studentId: studentId,
+                permanent: false,
+                used: false,
+                createdBy: 'admin',
+                createdAt: new Date().toISOString(),
+                expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // 24h
             });
+
+            // Also store on student record for quick lookup
+            const { error: studentErr } = await supabase
+                .from('students')
+                .update({
+                    lastLoginToken: token,
+                    tokenCreatedAt: new Date().toISOString(),
+                })
+                .eq('id', studentId);
+
+            if (tokenErr) console.warn("Token insert error:", tokenErr.message);
+            if (studentErr) console.warn("Student update error:", studentErr.message);
 
             return res.status(200).json({ success: true, token });
         }
@@ -80,30 +72,43 @@ export default async function handler(req, res) {
             const { token } = req.body;
             if (!token) return res.status(400).json({ error: "Missing Token" });
 
-            const snapshot = await db.collection("students")
-                .where("lastLoginToken", "==", token)
-                .limit(1)
-                .get();
+            // Search for student with this token
+            const { data: students, error: searchErr } = await supabase
+                .from('students')
+                .select('id, fullName')
+                .eq('lastLoginToken', token)
+                .limit(1);
 
-            if (snapshot.empty) {
+            if (searchErr || !students || students.length === 0) {
                 return res.status(400).json({ success: false, error: "Invalid Token" });
             }
 
-            const studentDoc = snapshot.docs[0];
-            const studentData = studentDoc.data();
-            const uid = studentDoc.id;
+            const student = students[0];
+            const uid = student.id;
 
-            // Generate Custom Token for Firebase Auth
-            const customToken = await admin.auth().createCustomToken(uid);
+            // Get the user's email for Supabase auth sign-in
+            const { data: userData } = await supabase
+                .from('users')
+                .select('email, password')
+                .eq('id', uid)
+                .maybeSingle();
 
-            return res.status(200).json({ success: true, customToken, uid });
+            if (!userData) {
+                return res.status(400).json({ success: false, error: "User not found" });
+            }
+
+            return res.status(200).json({
+                success: true,
+                uid,
+                email: userData.email,
+                password: userData.password,
+            });
         }
 
         return res.status(400).json({ error: "Invalid Action" });
 
     } catch (error) {
         console.error("Auth Token Error:", error);
-        // Important: Return JSON error so frontend handles it gracefully
         return res.status(500).json({ error: "Server Error: " + error.message });
     }
 }

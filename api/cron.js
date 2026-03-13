@@ -142,13 +142,13 @@ async function runAutoAbsent(manual = true) {
 
     console.log(`📅 Auto Absence for ${manual ? 'TODAY' : 'YESTERDAY'}: ${todayDateStr} (${dayName}, idx:${dayIndex})`);
 
-    // 1. Load Rules from app_settings
+    // 1. Load Rules from app_settings (data is in direct columns, not 'value')
     const { data: rulesRow } = await supabase
         .from('app_settings')
-        .select('value')
+        .select('*')
         .eq('id', 'rules')
         .maybeSingle();
-    const rulesConfig = rulesRow?.value || {};
+    const rulesConfig = rulesRow || {};
 
     const autoAbsentConfig = rulesConfig.autoAbsent || { enabled: true, days: [6, 1, 3] };
     if (autoAbsentConfig.enabled === false) {
@@ -161,10 +161,10 @@ async function runAutoAbsent(manual = true) {
     // 2. Check Global Holidays
     const { data: holidaysRow } = await supabase
         .from('app_settings')
-        .select('value')
+        .select('*')
         .eq('id', 'holidays')
         .maybeSingle();
-    const holidaysList = holidaysRow?.value?.list || [];
+    const holidaysList = holidaysRow?.list || [];
     const isGlobalHoliday = holidaysList.some(h => !h.halaqaId && todayDateStr >= h.from && todayDateStr <= h.to);
 
     if (isGlobalHoliday) {
@@ -201,13 +201,13 @@ async function runAutoAbsent(manual = true) {
         attendanceBatch.push({
             id: `${todayDateStr}_${s.id}`,
             studentId: s.id,
-            studentName: s.fullName || "Unknown",
             halaqaId: s.halaqaId || "unknown",
             halaqaName: s.halaqaName || "بدون حلقة",
             status: "absent",
             date: todayDateStr,
             recordedBy: "system_auto",
             createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
         });
 
         newlyAbsentIds.push(s.id);
@@ -242,13 +242,13 @@ async function runAutoAbsent(manual = true) {
 async function runCheckAbsence() {
     console.log("🔄 Running Monthly Absence Check + Auto Demotion...");
 
-    // 1. Load Rules
+    // 1. Load Rules (data is in direct columns)
     const { data: rulesRow } = await supabase
         .from('app_settings')
-        .select('value')
+        .select('*')
         .eq('id', 'rules')
         .maybeSingle();
-    const rulesConfig = rulesRow?.value || {};
+    const rulesConfig = rulesRow || {};
     const demotionSettings = rulesConfig.demotion || { enabled: true, maxMonthlyUnexcused: 4, maxMonthlyExcused: 2 };
     const halaqaPairings = rulesConfig.halaqaPairings || {};
 
@@ -407,10 +407,10 @@ async function runCheckPromotion() {
 
     const { data: rulesRow } = await supabase
         .from('app_settings')
-        .select('value')
+        .select('*')
         .eq('id', 'rules')
         .maybeSingle();
-    const rulesData = rulesRow?.value || {};
+    const rulesData = rulesRow || {};
     const promotion = rulesData.promotion || {};
 
     if (promotion.enabled === false) {
