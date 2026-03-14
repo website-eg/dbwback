@@ -43,20 +43,20 @@ console.log(`🔑 Loaded ${GROQ_API_KEYS.length} Groq API keys`);
 const BASE_RULES = `أنت "روبو" 🤖 — مساعد شخصي ذكي بشخصية ودودة ومحفزة لتطبيق "بِرّ الوالدين" لتحفيظ القرآن الكريم.
 - تتحدث بالعربية الفصحى البسيطة مع إيموجي مناسب.
 - ردودك مختصرة وذكية. لا إطالة بلا فائدة.
-- أنت مساعد شخصي متخصص في إدارة الأكاديمية (حضور، درجات، سلوك، منتدى) ومعلم ديني للإجابة على الفتاوى والتفسير.
+- أنت مساعد شخصي متخصص في إدارة الأكاديمية (حضور، درجات، سلوك، منتدى) ومعلم ديني للإجابة على الفتاوى وأسئلة الحديث النبوي.
 
 ❗ قواعد الرد:
-1. تصرف وكأنك تعرف كل شيء بنفسك. لا تقل "بعد تحليل البيانات" أو "وفقاً للسجلات" أبداً.
+1. تصرف وكأنك تعرف كل شيء بنفسك. لا تقل "بعد تحليل البيانات" أبداً.
 2. عند عرض بيانات، استخدم أرقام محددة ورتّبها بوضوح.
 3. إذا سأل عن "أمس" أو "البارحة" → استخدم date="yesterday". إذا سأل عن "اليوم" → date="today".
 4. إذا لم تجد بيانات → "ما عندي هالمعلومة حالياً".
-5. 🕋 إذا سألك المستخدم سؤالاً دينياً (حكم شرعي، تفسير، عقيدة، حديث) ← **يجب** استخدام أداة (get_islamic_knowledge_rag) للبحث في المصادر الشرعية أولاً، ثم أجب بناءً على ما وجدته بطريقة سهلة ومبسطة.
-6. ✍️ التحكم وتنفيذ الأوامر: إذا طلب المعلم تسجيل حضور/غياب استخدم \`mark_student_attendance\`. لخصم/إضافة سلوك استخدم \`add_behavior_record\`. لنشر إعلان ديني أو غيره استخدم \`create_forum_post\`.
+5. 🕋 إذا سألك المستخدم أي سؤال عن الأحاديث النبوية، الرواة، التخريج، الفتاوى، أو الأحكام الشرعية ← **يجب** استخدام أداة (get_islamic_knowledge_rag) للبحث في قاعدة بيانات تحتوي على الكتب التسعة (+62,000 حديث). أجب بناءً على ما تجده، واذكر اسم الكتاب ورقم الحديث والحكم للتخريج. إذا كان الحديث ضعيفاً، حذّر منه.
+6. ✍️ التحكم وتنفيذ الأوامر: للحضور استخدم \`mark_student_attendance\`. للسلوك \`add_behavior_record\`. للإعلانات \`create_forum_post\`.
 
-🔀 متى تستخدم الأدوات ومتى تُجيب مباشرة:
-- تنفيذ أوامر الأكاديمية (حضور، درجات، منتدى، سلوك، استعلام بيانات) ← استخدم الأدوات المخصصة.
-- أسئلة دينية وشرعية (فتاوى، القرآن، الأحاديث) ← يجب استخدام get_islamic_knowledge_rag.
-- أسئلة عامة أو دردشة بسيطة ← أجب مباشرة بدون أدوات.
+🔀 متى تستخدم الأدوات:
+- لأسئلة الأحاديث والبحث عن الأحاديث النبوية ومعلوماتها والتخريج والفتاوى ← يجب استخدام get_islamic_knowledge_rag.
+- استعلام بيانات الطلاب والأكاديمية ← استخدم الأدوات المخصصة.
+- أسئلة دردشة عامة ← أجب مباشرة.
 
 🧠 الذكاء المحادثي (مهم جداً):
 - افهم السياق من الرسائل السابقة.
@@ -224,11 +224,11 @@ function getToolsForRole(role) {
             type: "function",
             function: {
                 name: "get_islamic_knowledge_rag",
-                description: "البحث في أسئلة الفتاوى والأحكام الشرعية والعقيدة والتفسير والأدعية للإجابة على الطالب بموثوقية",
+                description: "البحث في قاعدة بيانات الأحاديث النبوية (62 ألف حديث من الكتب التسعة) والفتاوى الشرعية",
                 parameters: {
                     type: "object",
                     properties: {
-                        query: { type: "string", description: "نص السؤال الديني أو الكلمة المراد تفسيرها للاستعلام عنها" }
+                        query: { type: "string", description: "نص السؤال الديني أو الفتوى أو موضوع الحديث للبحث عنه" }
                     },
                     required: ["query"]
                 }
@@ -2407,89 +2407,67 @@ async function tool_add_behavior_record({ teacher_id, student_name, is_positive,
 }
 
 // ─── Tool: get_islamic_knowledge_rag (Common) ───
-// A realistic RAG implementation that reads from local academy curriculum texts
-let _ragSourcesCache = null;
-
-function tool_get_islamic_knowledge_rag({ query }) {
+// A powerful Hadith RAG implementation that searches 62k+ Hadiths in Supabase using Full-Text Search
+async function tool_get_islamic_knowledge_rag({ query }) {
     try {
-        if (!_ragSourcesCache) {
-            _ragSourcesCache = [];
-
-            // Helper to load and split paragraphs only once
-            const loadFile = (filename, label) => {
-                try {
-                    let p = path.join(process.cwd(), 'data', filename);
-                    if (!fs.existsSync(p)) p = path.join(process.cwd(), 'api', 'data', filename);
-                    if (fs.existsSync(p)) {
-                        const content = fs.readFileSync(p, 'utf8');
-                        // Split strictly by empty lines or double newlines to treat paragraphs as separate chunks
-                        const chunks = content.split(/\n\s*\n/);
-                        chunks.forEach(c => {
-                            const trimmed = c.trim();
-                            if (trimmed.length > 20) {
-                                _ragSourcesCache.push({ text: `[المصدر: ${label}]\n${trimmed}`, raw: trimmed });
-                            }
-                        });
-                    }
-                } catch (_) { }
-            };
-
-            // Load files
-            loadFile('azkar.txt', 'الأذكار');
-            loadFile('islamic_fatawa.txt', 'الفتاوى والمنهج');
-            console.log(`📚 RAG Cache Initialized: ${_ragSourcesCache.length} paragraphs loaded into memory.`);
-        }
-
-        let allSources = _ragSourcesCache;
-
-        // Files are already loaded and cached from above logic
-
-        // Extract keywords from query
-        const stopWords = ['هل', 'يجوز', 'ما', 'هو', 'حكم', 'كيف', 'متى', 'أين', 'في', 'من', 'على', 'إلى', 'عن', 'يارب', 'يا'];
-        // Keep Arabic letters, Arabic-Indic numerals, diacritics (tashkeel), English letters, and numbers
+        // Clean query for Arabic full-text search
+        const stopWords = ['هل', 'يجوز', 'ما', 'هو', 'حكم', 'كيف', 'متى', 'أين', 'في', 'من', 'على', 'إلى', 'عن', 'يارب', 'يا', 'حديث', 'صحيفة', 'الرسول', 'رسول', 'الله', 'صلى', 'وسلم'];
         const queryWords = query.replace(/[^\u0621-\u064A\u064B-\u065F\u0660-\u06690-9a-zA-Z]/g, ' ')
             .split(/\s+/)
             .filter(w => w.length > 2 && !stopWords.includes(w));
+            
+        const searchQuery = queryWords.join(' | '); // Match ANY of the keywords using OR (|) for broader recall
 
-        // Score paragraphs
-        let scoredChunks = allSources.map(chunk => {
-            let score = 0;
-            queryWords.forEach(qw => {
-                if (chunk.raw.includes(qw)) score += 3; // exact substring match
-                // naive root check (very basic arabic stemming)
-                if (qw.length > 3 && chunk.raw.includes(qw.substring(0, qw.length - 1))) score += 1;
-            });
-            return { ...chunk, score };
-        });
-
-        // Sort by score taking top 4 highly relevant chunks
-        scoredChunks.sort((a, b) => b.score - a.score);
-
-        let limitedText = "";
-        const topChunks = scoredChunks.filter(c => c.score > 0).slice(0, 4);
-
-        if (topChunks.length > 0) {
-            limitedText = topChunks.map(c => c.text).join('\n\n---\n\n');
-        } else {
-            // fallback if no keyword matches, return a mix
-            limitedText = allSources.slice(0, 4).map(c => c.text).join('\n\n---\n\n');
+        if (!searchQuery) {
+             return JSON.stringify({
+                error: "السؤال قصير جداً أو يحتوي على كلمات عامة فقط. لا يمكن البحث في قاعدة الأحاديث.",
+                directive: "قم بالإجابة بناءً على معرفتك الشرعية العامة بشكل مختصر ومبسط."
+             });
         }
 
-        // Final safety truncation
-        limitedText = limitedText.substring(0, 6000);
+        // Perform specialized full text search in Supabase using textSearch
+        const { data: searchResults, error } = await db.from('hadiths')
+            .select('book_name, chapter_name, hadith_number, text_arabic, grade')
+            .textSearch('search_vector', searchQuery, {
+                config: 'arabic',
+                type: 'websearch'
+            })
+            .limit(5);
+
+        if (error) {
+            console.error("Supabase textSearch error:", error);
+            throw error;
+        }
+
+        let limitedText = "";
+        
+        if (searchResults && searchResults.length > 0) {
+            limitedText = searchResults.map((h, i) => {
+                let gradeInfo = h.grade ? ` (حكم الحديث: ${h.grade})` : '';
+                return `[النتيجة ${i+1}]
+الكتاب: ${h.book_name}
+الباب/الكتاب الفرعي: ${h.chapter_name || 'غير محدد'}
+رقم الحديث: ${h.hadith_number}
+النص: ${h.text_arabic}${gradeInfo}`;
+            }).join('\n\n---\n\n');
+        } else {
+            // Fallback: If no exact search results, instruct the LLM to use its own knowledge
+            limitedText = "لا توجد أحاديث مطابقة في قاعدة البيانات.";
+        }
 
         return JSON.stringify({
-            context: "أنت الآن تجيب على سؤال شرعي أو تفصيل دعاء. استخدم المعلومات التالية المستخرجة من ملف (منهج الأكاديمية / الأذكار) لمساعدة الطالب.",
-            curriculum_text_found: limitedText ? limitedText : "لا يوجد منهج محمل حالياً.",
+            context: "أنت الآن تجيب على سؤال ديني، فتوى، أو استفسار عن حديث. لقد تم البحث في قاعدة الأحاديث النبوية التسعة استناداً لسؤال المستخدم.",
+            database_hadiths_found: limitedText,
             query_received: query,
             status: "ready_to_answer",
-            directive: "قم بالإجابة بأسلوب تربوي بناءً على المنهج المرفق أعلاه. إذا كان المنهج فارغاً أو لا يحتوي الإجابة، استخدم معرفتك العامة للإجابة شرعياً بطريقة صحيحة ومبسطة."
+            directive: "إذا وجدت أحاديث مطابقة أعلاه، استخدمها للإجابة مع ذكر الكتاب ورقم الحديث والحكم (مثل الحديث صحيح أو ضعيف). إذا كان الحديث ضعيفاً، حذر منه بناءً على التخريج. إذا لم تجد أحاديث، أجب من معرفتك الشرعية العامة."
         });
     } catch (e) {
+        console.error("RAG Tool Error:", e);
         return JSON.stringify({
-            error: "فشل قراءة ملف المنهج، يرجى الاعتماد على معرفتك الداخلية للإجابة.",
+            error: "فشل البحث في قاعدة الأحاديث.",
             query_received: query,
-            directive: "قم بالإجابة بأسلوب تربوي مبسط يناسب طلاب الأكاديمية مع ذكر الآية أو الحديث إن وجد."
+            directive: "قم بالإجابة بأسلوب تربوي مبسط عن السؤال."
         });
     }
 }
