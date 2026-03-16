@@ -188,7 +188,6 @@ async function runAutoAbsent(manual = true) {
 
     for (const s of students) {
         if (processedStudentIds.has(s.id)) continue;
-        if (s.type === 'reserve') continue;
 
         const activeDays = (s.halaqaId && halaqaDays[s.halaqaId]?.length > 0) ? halaqaDays[s.halaqaId] : globalDays;
         if (!activeDays.includes(dayIndex)) continue;
