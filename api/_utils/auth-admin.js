@@ -6,20 +6,21 @@ let supabaseServiceRoleClient = null;
 export function getSupabaseAdmin() {
   if (supabaseServiceRoleClient) return supabaseServiceRoleClient;
 
-  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error('Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variables');
+  // Use ACADEMY database (contains students, users, attendance, progress, etc.)
+  // Falls back to generic SUPABASE_URL for backward compatibility
+  const url = process.env.ACADEMY_SUPABASE_URL || process.env.SUPABASE_URL;
+  const key = process.env.ACADEMY_SUPABASE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+  if (!url || !key) {
+    throw new Error('Missing ACADEMY_SUPABASE_URL/ACADEMY_SUPABASE_KEY (or SUPABASE_URL/SUPABASE_SERVICE_ROLE_KEY) environment variables');
   }
 
-  supabaseServiceRoleClient = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_ROLE_KEY,
-    {
-      auth: {
-        autoRefreshToken: false,
-        persistSession: false,
-      },
-    }
-  );
+  supabaseServiceRoleClient = createClient(url, key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
 
   return supabaseServiceRoleClient;
 }

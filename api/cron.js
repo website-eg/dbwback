@@ -302,12 +302,9 @@ async function runCheckAbsence() {
         let reason = null;
         let triggerType = null;
 
-        if (stats.absent >= globalMaxUnexcused) {
-            reason = `تجاوز حد الغياب الشهري (${stats.absent}/${globalMaxUnexcused})`;
-            triggerType = 'unexcused';
-        } else if (stats.excused >= globalMaxExcused) {
-            reason = `تجاوز حد الأعذار الشهري (${stats.excused}/${globalMaxExcused})`;
-            triggerType = 'excused';
+        if (stats.absent >= globalMaxUnexcused && stats.excused >= globalMaxExcused) {
+            reason = `تجاوز الحد المسموح: غياب (${stats.absent}/${globalMaxUnexcused}) وأعذار (${stats.excused}/${globalMaxExcused})`;
+            triggerType = 'combined_limit';
         } else if (totalAbsence >= globalMaxTotal) {
             reason = `تجاوز الحد الكلي للغياب (${totalAbsence}/${globalMaxTotal})`;
             triggerType = 'total_cap';
